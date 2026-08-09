@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/chroma_db/
+data/docs/
+_fastapi_repo_tmp/
+eval/results.json
+.DS_Store
+.vscode/

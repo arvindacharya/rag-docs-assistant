@@ -1,0 +1,26 @@
+# core
+fastapi>=0.115
+uvicorn[standard]>=0.30
+chromadb>=0.5
+anthropic>=0.39
+streamlit>=1.38
+python-dotenv>=1.0
+requests>=2.32
+
+# evals
+# NOTE: pinned -- ragas 0.4.x currently has a broken import against the
+# latest langchain-community (langchain_community.chat_models.vertexai
+# was removed as part of langchain-community's sunsetting). This 0.3.9
+# combo is verified to import cleanly as of Aug 2026. If you bump ragas,
+# re-check `python -c "import ragas"` before trusting the eval script.
+ragas==0.3.9
+langchain==0.3.27
+langchain-core==0.3.86
+langchain-community==0.3.27
+langchain-openai==0.3.28
+datasets>=3.0
+
+# observability (Langfuse v4 SDK - uses `from langfuse import get_client`)
+langfuse>=4.0
+
+sentence-transformers>=3.0

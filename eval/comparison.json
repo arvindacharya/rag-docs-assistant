@@ -1,0 +1,72 @@
+[
+  {
+    "question": "What's the current recommended way to run startup and shutdown code in a FastAPI app, and what does it accept?",
+    "gotcha": true,
+    "gotcha_reason": "on_event is extremely common in older tutorials/blog posts/StackOverflow answers, so a base model may default to it even if it also knows about lifespan.",
+    "reference_answer": "Use the `lifespan` parameter of the FastAPI() app, passing it an async context manager (an async function using yield). The current docs teach this exclusively -- the older per-event `@app.on_event(\"startup\")`/(\"shutdown\") decorators still work for backwards compatibility but aren't used in the current tutorial.",
+    "baseline_answer": "# Startup/Shutdown Events in FastAPI\n\nThe current recommended approach is using the **`lifespan` parameter** on the `FastAPI` app instance, rather than the older `@app.on_event(\"startup\")` and `@app.on_event(\"shutdown\")` decorators (which are deprecated).\n\n## How it works\n\nYou define an **async context manager** (using `@asynccontextmanager` from `contextlib`) and pass it to the `lifespan` parameter of your `FastAPI` app.\n\n```python\nfrom contextlib import asynccontextmanager\nfrom fastapi import FastAPI\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    # Code here runs BEFORE the app starts accepting requests\n    ml_models[\"answer_to_everything\"] = load_model()\n    print(\"Startup complete\")\n\n    yield  # The application runs while paused here\n\n    # Code here runs AFTER the app finishes handling requests (shutdown)\n    ml_models.clear()\n    print(\"Shutdown complete\")\n\napp = FastAPI(lifespan=lifespan)\n```\n\n## What it accepts\n\nThe `lifespan` parameter accepts a **callable that takes the `FastAPI` app instance as its only argument and returns an async",
+    "rag_answer": "The current recommended way is to use **`lifespan` async context managers**, which superseded the older `startup` and `shutdown` events [source: release-notes.md].\n\nInstead of defining independent `startup` and `shutdown` event handlers, you define that logic in a single function using `yield`, decorated with `@asynccontextmanager` (an async context manager) [source: release-notes.md]. This was added via PR #2944 by @uSpike, and released in version 0.93.0 (2023-03-07) [source: release-notes.md].\n\nThe context provided does not include further details on what parameters this `lifespan` function specifically accepts, so I don't have that information beyond what's stated here.",
+    "rag_sources": [
+      "release-notes.md",
+      "release-notes.md",
+      "deployment/concepts.md",
+      "fastapi-cli.md"
+    ]
+  },
+  {
+    "question": "How do you disable the interactive Swagger UI docs for a FastAPI app?",
+    "gotcha": true,
+    "gotcha_reason": "Precise parameter name -- easy to guess wrong or invent a plausible-sounding alternative.",
+    "reference_answer": "Pass docs_url=None when creating the FastAPI() app instance (and redoc_url=None to also disable ReDoc).",
+    "baseline_answer": "# Disabling Swagger UI Docs in FastAPI\n\nTo disable the interactive Swagger UI (and optionally ReDoc), you set the relevant parameters to `None` when creating your `FastAPI` instance.\n\n## Disable Only Swagger UI\n\n```python\nfrom fastapi import FastAPI\n\napp = FastAPI(docs_url=None)\n```\n\nThis disables `/docs` but leaves ReDoc (`/redoc`) available.\n\n## Disable Both Swagger UI and ReDoc\n\n```python\nfrom fastapi import FastAPI\n\napp = FastAPI(docs_url=None, redoc_url=None)\n```\n\n## Disable the OpenAPI Schema Entirely\n\nIf you want to disable the underlying OpenAPI schema generation too (which also disables both docs UIs since they depend on it), set `openapi_url=None`:\n\n```python\nfrom fastapi import FastAPI\n\napp = FastAPI(openapi_url=None)\n```\n\nThis removes `/openapi.json` as well as `/docs` and `/redoc`, since both UIs fetch their schema from that endpoint.\n\n## Custom URLs (Alternative)\n\nIf your goal is just to move the docs rather than fully disable them (e.g., for security by obsc",
+    "rag_answer": "To disable the interactive Swagger UI docs, set the `docs_url` parameter to `None` when creating the FastAPI app (e.g., `docs_url=None`) [source: tutorial/metadata.md].",
+    "rag_sources": [
+      "tutorial/metadata.md",
+      "how-to/configure-swagger-ui.md",
+      "tutorial/metadata.md",
+      "reference/openapi/docs.md"
+    ]
+  },
+  {
+    "question": "How do you override a dependency with a mock version in FastAPI tests?",
+    "gotcha": true,
+    "gotcha_reason": "Exact attribute name and dict-based mechanism -- easy to blend with other DI/testing patterns from memory.",
+    "reference_answer": "Set a key on the app.dependency_overrides dict: the key is the original dependency function, the value is your override function. Reset by setting app.dependency_overrides back to an empty dict.",
+    "baseline_answer": "# Overriding Dependencies in FastAPI Tests\n\nFastAPI provides a built-in mechanism for overriding dependencies during testing through the `app.dependency_overrides` dictionary. This lets you replace real dependencies (like database connections, authentication, or external services) with mock versions without modifying your application code.\n\n## Basic Approach\n\nHere's the general pattern:\n\n```python\nfrom fastapi import FastAPI, Depends\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\n\n# Original dependency\ndef get_db():\n    db = RealDatabaseConnection()\n    try:\n        yield db\n    finally:\n        db.close()\n\n@app.get(\"/items/\")\ndef read_items(db = Depends(get_db)):\n    return db.get_items()\n\n# In your test file\ndef override_get_db():\n    db = FakeDatabaseConnection()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\n\nclient = TestClient(app)\n\ndef test_read_items():\n    response = client.get(\"/items/\")\n    assert response.status_code == 200\n```\n\n## Key Points\n\n1. **The override key** is the original dependency function itself (e.g., `get_db`), not a string name",
+    "rag_answer": "To override a dependency with a mock version in FastAPI tests, you use the `app.dependency_overrides` attribute on your **FastAPI** application, which is a simple `dict` [source: advanced/testing-dependencies.md].\n\nTo perform the override:\n- Put the **original dependency** (a function) as the **key** in the dict.\n- Put your **dependency override** (another function, i.e. your mock) as the **value** [source: advanced/testing-dependencies.md].\n\nOnce set, **FastAPI** will call your override function instead of the original dependency whenever that dependency is used [source: advanced/testing-dependencies.md].\n\nThis is useful, for example, if you have an external authentication provider that you'd normally call with a token to get an authenticated user. Since calling that provider repeatedly in tests could be costly or slow, you can override the dependency with a custom one that returns a mock user instead, just for your tests [source: advanced/testing-dependencies.md].\n\nYou can set a dependency override for a dependency used anywhere in your application \u2014 whether in a *path operation function*, a *path operation decorator* (when you don't use the return value), an `.include_router()` call, etc. FastAPI will still be able to override it in all these cases [source: advanced/testing-dependencies.md].\n\n**Resetting overrides:** After your tests, you can reset (remove) all overrides by setting `app.dependency_overrides` back to an empty `dict`:\n\n```Python\napp.dependency_overrides = {}\n```\n\n[source: advanced/testing-dependencies.md]\n\nIf you only want to override a dependency for some tests, you can set the override at the beginning of the test function and reset it at the end of that same test function [source: advanced/testing-dependencies.md].",
+    "rag_sources": [
+      "advanced/testing-dependencies.md",
+      "advanced/testing-dependencies.md",
+      "release-notes.md",
+      "advanced/testing-dependencies.md"
+    ]
+  },
+  {
+    "question": "How do you mark a specific query parameter as deprecated in the auto-generated docs, while still supporting it for existing clients?",
+    "gotcha": true,
+    "gotcha_reason": "Could plausibly be confused with marking the whole path operation deprecated instead of just the parameter.",
+    "reference_answer": "Pass deprecated=True to Query(...) for that parameter.",
+    "baseline_answer": "# Marking a Query Parameter as Deprecated in FastAPI\n\nYou can mark a query parameter as deprecated using the `deprecated=True` argument in the `Query()` function. This will show it as deprecated in the auto-generated docs (Swagger UI / ReDoc) while still fully functioning for existing clients.\n\n## Example\n\n```python\nfrom typing import Optional\nfrom fastapi import FastAPI, Query\n\napp = FastAPI()\n\n@app.get(\"/items/\")\nasync def read_items(\n    q: Optional[str] = Query(\n        default=None,\n        deprecated=True,\n        description=\"This parameter is deprecated, use 'search' instead.\",\n    ),\n    search: Optional[str] = Query(default=None),\n):\n    query = search or q\n    return {\"query\": query}\n```\n\n## What happens\n\n- In **Swagger UI**, the deprecated parameter will appear with a strikethrough style and a \"deprecated\" label.\n- In **ReDoc**, it will similarly be flagged as deprecated.\n- The parameter **still works normally** in your endpoint logic \u2014 FastAPI doesn't restrict or block it, it just adds metadata to the OpenAPI schema (`deprecated: true`) so API consumers know to migrate",
+    "rag_answer": "To mark a query parameter as deprecated while still supporting existing clients, pass the parameter `deprecated=True` to `Query`:\n\n> Now let's say you don't like this parameter anymore. You have to leave it there a while because there are clients using it, but you want the docs to clearly show it as deprecated. Then pass the parameter `deprecated=True` to `Query` [source: tutorial/query-params-str-validations.md]\n\nThis will make the docs display the parameter as deprecated in the automatically generated documentation [source: tutorial/query-params-str-validations.md].",
+    "rag_sources": [
+      "tutorial/query-params-str-validations.md",
+      "release-notes.md",
+      "tutorial/query-params-str-validations.md",
+      "tutorial/query-params-str-validations.md"
+    ]
+  },
+  {
+    "question": "How do you make a response model omit fields that were never explicitly set, instead of returning their default values?",
+    "gotcha": true,
+    "gotcha_reason": "Exact parameter name among several similarly-named response_model_* options -- easy to mix up.",
+    "reference_answer": "Set response_model_exclude_unset=True on the path operation decorator.",
+    "baseline_answer": "## Using `response_model_exclude_unset=True`\n\nFastAPI lets you configure the path operation decorator to only include fields that were explicitly set when creating the response object, rather than including all fields with their defaults.\n\n```python\nfrom fastapi import FastAPI\nfrom pydantic import BaseModel\n\napp = FastAPI()\n\n\nclass Item(BaseModel):\n    name: str\n    description: str | None = None\n    price: float\n    tax: float = 10.5\n\n\nitems = {\n    \"foo\": {\"name\": \"Foo\", \"price\": 50.2},\n    \"bar\": {\"name\": \"Bar\", \"description\": \"The bartenders\", \"price\": 62, \"tax\": 20.2},\n}\n\n\n@app.get(\"/items/{item_id}\", response_model=Item, response_model_exclude_unset=True)\nasync def read_item(item_id: str):\n    return items[item_id]\n```\n\nFor the `\"foo\"` item, since `description` and `tax` were never set (they'd just fall back to their defaults), the response will **omit** them entirely rather than showing `description: null` and `tax: 10.5`. The response becomes:\n\n```json\n{\n    \"name\": \"Foo\",\n    \"price\": 50.2\n}\n```\n\nFor `\"bar\"`, since all fields were explicitly set, they'll all app",
+    "rag_answer": "Set `response_model_exclude_unset=True` as a *path operation decorator* parameter. This makes the response return only the values that were explicitly set, rather than including fields with their default values [source: tutorial/response-model.md].\n\nFor example, if a model has optional attributes with defaults (like `description: Union[str, None] = None`, `tax: float = 10.5`, or `tags: List[str] = []`), using `response_model_exclude_unset=True` allows you to omit them from the response if they were not actually stored/set [source: tutorial/response-model.md].\n\nThis is particularly useful when working with models with many optional attributes (e.g., in a NoSQL database) where you don't want to send lengthy JSON responses full of default values [source: tutorial/response-model.md].",
+    "rag_sources": [
+      "tutorial/response-model.md",
+      "release-notes.md",
+      "tutorial/response-model.md",
+      "advanced/response-change-status-code.md"
+    ]
+  }
+]

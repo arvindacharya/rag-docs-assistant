@@ -1,0 +1,113 @@
+[
+  {
+    "question": "How do I declare a path parameter with a type in FastAPI?",
+    "reference_answer": "Declare it as a function parameter with a Python type annotation, e.g. def read_item(item_id: int): FastAPI parses and validates it from the URL path automatically.",
+    "expected_source_hint": "path-params"
+  },
+  {
+    "question": "How do I make a query parameter optional with a default value?",
+    "reference_answer": "Give the function parameter a default value (e.g. q: str = None or using Optional), and FastAPI treats it as an optional query parameter.",
+    "expected_source_hint": "query-params"
+  },
+  {
+    "question": "How do I define a request body using Pydantic models?",
+    "reference_answer": "Create a class that inherits from pydantic.BaseModel with typed fields, then use it as a type-annotated parameter in your path operation function.",
+    "expected_source_hint": "body"
+  },
+  {
+    "question": "What is dependency injection used for in FastAPI, and how do I declare a dependency?",
+    "reference_answer": "Dependencies let you share logic (like DB sessions or auth checks) across path operations. You declare them with Depends() as a parameter default.",
+    "expected_source_hint": "dependencies"
+  },
+  {
+    "question": "How do I run a task in the background after returning a response?",
+    "reference_answer": "Add a BackgroundTasks parameter to your path operation and call background_tasks.add_task(func, *args) to schedule work after the response is sent.",
+    "expected_source_hint": "background-tasks"
+  },
+  {
+    "question": "How do I enable CORS in a FastAPI app?",
+    "reference_answer": "Add CORSMiddleware from fastapi.middleware.cors, configuring allow_origins, allow_methods, and allow_headers as needed.",
+    "expected_source_hint": "cors"
+  },
+  {
+    "question": "How do I restrict a response to only the fields defined in a model?",
+    "reference_answer": "Use the response_model parameter on the path operation decorator so FastAPI filters and validates the output against that model.",
+    "expected_source_hint": "response-model"
+  },
+  {
+    "question": "How do I test a FastAPI app without running a real server?",
+    "reference_answer": "Use FastAPI's TestClient (based on httpx), instantiate it with your app object, and call methods like client.get() or client.post() directly in tests.",
+    "expected_source_hint": "testing"
+  },
+  {
+    "question": "How do I add a WebSocket endpoint?",
+    "reference_answer": "Use the @app.websocket() decorator on a function that accepts a WebSocket parameter, call await websocket.accept(), then send/receive messages in a loop.",
+    "expected_source_hint": "websockets"
+  },
+  {
+    "question": "How do I handle custom exceptions and return a specific error response?",
+    "reference_answer": "Define a custom exception class and register a handler with @app.exception_handler(), returning a JSONResponse with the status code and message you want.",
+    "expected_source_hint": "handling-errors"
+  },
+  {
+    "question": "When should a path operation function be declared with async def versus a regular def?",
+    "reference_answer": "Use async def when your function awaits async I/O (like an async DB driver); use a regular def for blocking/synchronous code, which FastAPI runs in a threadpool.",
+    "expected_source_hint": "async"
+  },
+  {
+    "question": "How do I serve static files like CSS or images from FastAPI?",
+    "reference_answer": "Mount a StaticFiles instance at a path using app.mount(), pointing it at the directory containing your static assets.",
+    "expected_source_hint": "static-files"
+  },
+  {
+    "question": "How do I manage app configuration and secrets with environment variables?",
+    "reference_answer": "Define a Pydantic Settings class (from pydantic_settings) that reads environment variables, and instantiate it once to access typed config values.",
+    "expected_source_hint": "settings"
+  },
+  {
+    "question": "How do I add a custom middleware that runs code on every request?",
+    "reference_answer": "Use the @app.middleware(\"http\") decorator on an async function that takes the request and a call_next function, then returns the response after optionally modifying it.",
+    "expected_source_hint": "middleware"
+  },
+  {
+    "question": "How do I secure an endpoint with OAuth2 password-based authentication?",
+    "reference_answer": "Use OAuth2PasswordBearer to define the token URL, then depend on it in protected endpoints to extract and validate the bearer token.",
+    "expected_source_hint": "security"
+  },
+
+  {
+    "question": "What's the current recommended way to run startup and shutdown code in a FastAPI app, and what does it accept?",
+    "reference_answer": "Use the `lifespan` parameter of the FastAPI() app, passing it an async context manager (an async function using yield). The current docs teach this exclusively -- the older per-event `@app.on_event(\"startup\")`/(\"shutdown\") decorators still work for backwards compatibility but aren't used in the current tutorial.",
+    "expected_source_hint": "advanced/events.md",
+    "gotcha": true,
+    "gotcha_reason": "on_event is extremely common in older tutorials/blog posts/StackOverflow answers, so a base model may default to it even if it also knows about lifespan."
+  },
+  {
+    "question": "How do you disable the interactive Swagger UI docs for a FastAPI app?",
+    "reference_answer": "Pass docs_url=None when creating the FastAPI() app instance (and redoc_url=None to also disable ReDoc).",
+    "expected_source_hint": "tutorial/metadata.md",
+    "gotcha": true,
+    "gotcha_reason": "Precise parameter name -- easy to guess wrong or invent a plausible-sounding alternative."
+  },
+  {
+    "question": "How do you override a dependency with a mock version in FastAPI tests?",
+    "reference_answer": "Set a key on the app.dependency_overrides dict: the key is the original dependency function, the value is your override function. Reset by setting app.dependency_overrides back to an empty dict.",
+    "expected_source_hint": "advanced/testing-dependencies.md",
+    "gotcha": true,
+    "gotcha_reason": "Exact attribute name and dict-based mechanism -- easy to blend with other DI/testing patterns from memory."
+  },
+  {
+    "question": "How do you mark a specific query parameter as deprecated in the auto-generated docs, while still supporting it for existing clients?",
+    "reference_answer": "Pass deprecated=True to Query(...) for that parameter.",
+    "expected_source_hint": "tutorial/query-params-str-validations.md",
+    "gotcha": true,
+    "gotcha_reason": "Could plausibly be confused with marking the whole path operation deprecated instead of just the parameter."
+  },
+  {
+    "question": "How do you make a response model omit fields that were never explicitly set, instead of returning their default values?",
+    "reference_answer": "Set response_model_exclude_unset=True on the path operation decorator.",
+    "expected_source_hint": "tutorial/response-model.md",
+    "gotcha": true,
+    "gotcha_reason": "Exact parameter name among several similarly-named response_model_* options -- easy to mix up."
+  }
+]
