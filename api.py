@@ -8,20 +8,44 @@ Two endpoints, two separate pipelines:
                     web search for other coding questions, or a decline
                     for anything non-technical), via router_chain.py
 
-Example:
+Both cost-generating endpoints require an API key IF the API_ACCESS_KEY
+environment variable is set -- this is a real, necessary protection
+once this is deployed publicly: with no auth at all, anyone who finds
+the URL can call /chat or /router-chat as many times as they want,
+spending real Anthropic credits on your key with no limit. Auth is
+optional-by-default (skipped entirely if API_ACCESS_KEY isn't set) so
+local development stays frictionless -- set it as an environment
+variable on Render (or wherever this is deployed) to actually enforce it.
+
+Example (no auth configured, e.g. local dev):
     curl -X POST localhost:8000/chat -H "Content-Type: application/json" \
          -d '{"question": "How do I add a path parameter?"}'
 
-    curl -X POST localhost:8000/router-chat -H "Content-Type: application/json" \
-         -d '{"question": "How do I use EventEmitter in Node.js?"}'
+Example (auth configured, e.g. deployed):
+    curl -X POST https://your-app.onrender.com/chat \
+         -H "Content-Type: application/json" \
+         -H "X-API-Key: your-secret-key" \
+         -d '{"question": "How do I add a path parameter?"}'
 """
-from fastapi import FastAPI, HTTPException
+import os
+
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from rag_chain import answer_question
 from router_chain import answer_question as router_answer_question
 
+API_ACCESS_KEY = os.getenv("API_ACCESS_KEY")  # unset -> auth disabled (local dev default)
+
 app = FastAPI(title="Docs RAG Assistant")
+
+
+def require_api_key(x_api_key: str = Header(default=None)):
+    """FastAPI dependency: enforces the API key only if one is
+    configured. Deliberately checked on every request, not cached --
+    the cost of a string comparison is negligible next to an LLM call."""
+    if API_ACCESS_KEY and x_api_key != API_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
 
 
 class ChatRequest(BaseModel):
@@ -48,10 +72,13 @@ class RouterChatResponse(BaseModel):
 
 @app.get("/health")
 def health():
+    # Deliberately NOT behind the API key -- Render's health checks hit
+    # this constantly and don't send auth headers, so protecting it
+    # would make Render think the service is unhealthy and restart it.
     return {"status": "ok"}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_api_key)])
 def chat(req: ChatRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
@@ -59,7 +86,7 @@ def chat(req: ChatRequest):
     return ChatResponse(question=result["question"], answer=result["answer"], sources=result["sources"])
 
 
-@app.post("/router-chat", response_model=RouterChatResponse)
+@app.post("/router-chat", response_model=RouterChatResponse, dependencies=[Depends(require_api_key)])
 def router_chat(req: RouterChatRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question must not be empty")
