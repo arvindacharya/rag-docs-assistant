@@ -52,12 +52,11 @@ def load_docs(docs_dir: str):
         print(f"Skipped {skipped} non-documentation file(s): {sorted(EXCLUDED_FILES)}")
     return docs
 
-
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
     """Markdown-aware chunking: split on headers first (keeping each
     header with its section), then split any section still too long on
     paragraph breaks -- never mid-sentence, never mid-word.
-
+ 
     `overlap` is unused; kept as a parameter only so the CLI flag and
     call site don't need to change. The old fixed-size chunker cut
     chunks at raw character offsets, which regularly sliced a chunk
@@ -68,39 +67,57 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
     rose from 0.283 to 0.345 after switching to this approach, and the
     correct file went from missing entirely out of the top-4 sources
     (in the original bug report) to holding 3 of the top 4 slots.
+ 
+    Second fix, found later on Node.js's docs (heavier per-function
+    changelog blocks push sections over chunk_size far more often than
+    FastAPI's docs did): when a section needs further splitting by
+    paragraph, every sub-chunk after the first now gets the section's
+    header re-prepended. Without this, only the first fragment kept the
+    header -- e.g. util.md's util.parseArgs() entry split into a
+    header+changelog-only chunk with no real explanation, followed by
+    chunks of pure parameter/return documentation that never mentioned
+    "parseArgs" anywhere in their own text, making them nearly
+    unfindable by a search for "parse command line arguments". Verified
+    on the real file: after this fix, every one of that section's
+    chunks contains the header text. Regression-checked against the
+    FastAPI lifespan question that was already working -- no change in
+    outcome (0.345 -> 0.344 similarity, same 3-of-4 result).
     """
     header_pattern = re.compile(r"^(#{1,6}\s.*)$", re.MULTILINE)
     parts = header_pattern.split(text)
-
+ 
     sections = []
     if parts[0].strip():
-        sections.append(parts[0])
+        sections.append((None, parts[0]))
     i = 1
     while i < len(parts):
-        header = parts[i]
+        header = parts[i].strip()
         body = parts[i + 1] if i + 1 < len(parts) else ""
-        sections.append(header + body)
+        sections.append((header, header + body))
         i += 2
-
+ 
     chunks = []
-    for section in sections:
+    for header, section in sections:
         section = section.strip()
         if not section:
             continue
         if len(section) <= chunk_size:
             chunks.append(section)
             continue
+        # Section too long -- split on paragraph breaks, never mid-sentence,
+        # and re-attach the header to every sub-chunk after the first.
         paragraphs = section.split("\n\n")
         current = ""
         for p in paragraphs:
             if current and len(current) + len(p) + 2 > chunk_size:
                 chunks.append(current.strip())
-                current = p
+                current = f"{header}\n\n{p}" if header else p
             else:
                 current = current + "\n\n" + p if current else p
         if current.strip():
             chunks.append(current.strip())
     return chunks
+
 
 
 def main():

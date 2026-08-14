@@ -24,3 +24,10 @@ datasets>=3.0
 langfuse>=4.0
 
 sentence-transformers>=3.0
+
+# v2 multi-source router agent
+# NOTE: pinned to 0.2.60, not the current 1.x line. langgraph>=1.0
+# requires langchain-core>=1.4, which conflicts with the
+# langchain-core==0.3.86 pin the ragas eval stack needs. Verified both
+# import cleanly together at these exact pins.
+langgraph==0.2.60

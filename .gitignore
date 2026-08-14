@@ -9,3 +9,6 @@ _fastapi_repo_tmp/
 eval/results.json
 .DS_Store
 .vscode/
+data/nodejs_docs/
+_nodejs_repo_tmp/
+eval/router_quality_results.json

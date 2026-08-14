@@ -1,0 +1,96 @@
+[
+  {
+    "question": "How do I add a path parameter with a type in FastAPI?",
+    "expected_source": "fastapi",
+    "reference_answer": "Declare it as a function parameter with a Python type annotation, e.g. def read_item(item_id: int): FastAPI parses and validates it from the URL path automatically."
+  },
+  {
+    "question": "How do I enable CORS in a FastAPI app?",
+    "expected_source": "fastapi",
+    "reference_answer": "Add CORSMiddleware from fastapi.middleware.cors, configuring allow_origins, allow_methods, and allow_headers as needed."
+  },
+  {
+    "question": "How do I add a WebSocket endpoint in FastAPI?",
+    "expected_source": "fastapi",
+    "reference_answer": "Use the @app.websocket() decorator on a function that accepts a WebSocket parameter, call await websocket.accept(), then send/receive messages in a loop."
+  },
+  {
+    "question": "What's the recommended way to run startup and shutdown code in FastAPI?",
+    "expected_source": "fastapi",
+    "reference_answer": "Use the lifespan parameter of the FastAPI() app, passing an async context manager (an async function using yield). The older per-event @app.on_event decorators still work for backwards compatibility but aren't used in the current tutorial."
+  },
+  {
+    "question": "How do I define a request body using Pydantic models?",
+    "expected_source": "fastapi",
+    "reference_answer": "Create a class that inherits from pydantic.BaseModel with typed fields, then use it as a type-annotated parameter in your path operation function."
+  },
+  {
+    "question": "How do I secure a FastAPI endpoint with OAuth2?",
+    "expected_source": "fastapi",
+    "reference_answer": "Use OAuth2PasswordBearer, passing it a tokenUrl parameter pointing to the endpoint clients use to obtain a token, then depend on it in protected endpoints to extract and validate the bearer token."
+  },
+  {
+    "question": "How do I override a dependency with a mock in FastAPI tests?",
+    "expected_source": "fastapi",
+    "reference_answer": "Set a key on the app.dependency_overrides dict: the key is the original dependency function, the value is your override function. Reset by setting app.dependency_overrides back to an empty dict."
+  },
+  {
+    "question": "How do I disable the Swagger UI docs in FastAPI?",
+    "expected_source": "fastapi",
+    "reference_answer": "Pass docs_url=None when creating the FastAPI() app instance (and redoc_url=None to also disable ReDoc)."
+  },
+
+  {
+    "question": "How do I listen for an event with EventEmitter in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "Call eventEmitter.on(eventName, listener) to register a listener function for a named event; eventEmitter.emit(eventName) triggers it, calling all attached listeners synchronously."
+  },
+  {
+    "question": "How do I read a file asynchronously in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "Use fs.readFile(path, callback) (or the fs/promises version with await) rather than the blocking fs.readFileSync()."
+  },
+  {
+    "question": "How do I spawn a child process in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "Use child_process.spawn(command, args, options) from the child_process module to launch a new process asynchronously."
+  },
+  {
+    "question": "What does process.nextTick() do in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "It queues a callback to run after the current operation finishes but before the event loop continues to the next phase. The docs currently mark this API's stability as 'Legacy' and recommend using queueMicrotask() instead for new code."
+  },
+  {
+    "question": "How do I create a TCP server using the net module in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "Use net.createServer([options][, connectionListener]) from the net module to create a new TCP (or IPC) server."
+  },
+  {
+    "question": "How do I hash a string using the crypto module in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "Use crypto.createHash(algorithm) (e.g. 'sha256') to create a Hash instance, then call .update(data) and .digest() to get the resulting hash."
+  },
+  {
+    "question": "How do I use async_hooks to track async resources in Node.js?",
+    "expected_source": "nodejs",
+    "reference_answer": "async_hooks provides createHook, AsyncHook, and executionAsyncResource for tracking async resource lifecycles, but the docs currently mark this stability level as 'Experimental' and explicitly recommend migrating away from it in favor of the stable AsyncLocalStorage API for context-tracking use cases."
+  },
+  {
+    "question": "How do I parse command line arguments in a Node.js CLI tool?",
+    "expected_source": "nodejs",
+    "reference_answer": "Use util.parseArgs([config]) from the node:util module, which takes an args/options configuration and returns the parsed values."
+  },
+
+  {
+    "question": "How do I ambiguously handle streaming data with backpressure?",
+    "expected_source": "nodejs",
+    "reference_answer": "In Node.js streams, respect backpressure by checking the return value of stream.write() and waiting for the 'drain' event before writing more, rather than writing continuously regardless of internal buffer state.",
+    "note": "deliberately vague -- 'streaming' and 'backpressure' are Node.js stream concepts, but phrased generically to test if the router still picks correctly without explicit 'Node.js' keyword"
+  },
+  {
+    "question": "How do I validate incoming request data with type hints?",
+    "expected_source": "fastapi",
+    "reference_answer": "Declare a Pydantic BaseModel with typed fields and use it as a parameter type annotation on your path operation function; FastAPI validates incoming data against those type hints automatically.",
+    "note": "deliberately vague -- 'type hints' signals Python/FastAPI without saying the framework name"
+  }
+]

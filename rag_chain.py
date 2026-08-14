@@ -45,6 +45,12 @@ def retrieve(question: str, k: int = TOP_K):
         )
         return chunks
 
+def _extract_text(message) -> str:
+    for block in message.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    block_types = [getattr(b, "type", type(b).__name__) for b in message.content]
+    raise RuntimeError(f"No text block in Claude's response -- got only {block_types}.")
 
 def generate_answer(question: str, chunks: list):
     context = "\n\n".join(f"[source: {c['source']}]\n{c['text']}" for c in chunks)
@@ -59,7 +65,7 @@ def generate_answer(question: str, chunks: list):
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        answer = message.content[0].text
+        answer = _extract_text(message)
         generation.update(
             input=user_message,
             output=answer,

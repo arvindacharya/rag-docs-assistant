@@ -31,6 +31,12 @@ MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 BASELINE_SYSTEM_PROMPT = """You are a helpful assistant answering a question about FastAPI. \
 Answer from what you know. Do not say you lack information -- give your best answer."""
 
+def _extract_text(message) -> str:
+    for block in message.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    block_types = [getattr(b, "type", type(b).__name__) for b in message.content]
+    raise RuntimeError(f"No text block in Claude's response -- got only {block_types}.")
 
 def baseline_answer(question: str, client: Anthropic) -> str:
     """No retrieval, no context -- just the model answering from memory.
@@ -41,7 +47,7 @@ def baseline_answer(question: str, client: Anthropic) -> str:
         system=BASELINE_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": question}],
     )
-    return message.content[0].text
+    return _extract_text(message)
 
 
 def main():

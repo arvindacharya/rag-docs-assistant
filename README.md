@@ -1,12 +1,18 @@
 # Docs RAG Assistant
 
-A retrieval-augmented Q&A assistant over the FastAPI documentation, with a chat
-UI, citation-grounded answers, LLM observability (Langfuse), and an
-eval suite (RAGAS + a retrieval sanity check).
+A retrieval-augmented Q&A assistant, with a chat UI, citation-grounded
+answers, LLM observability (Langfuse), and an eval suite (RAGAS + custom
+checks). Ships in two versions in the same repo:
 
-Built as a portfolio project. The corpus is FastAPI's docs by default, but
-`ingest.py` works on any folder of markdown files -- swap in your own notes,
-another library's docs, or anything else.
+- **v1**: a single-source pipeline over FastAPI's documentation.
+- **v2**: a LangGraph-based agent that routes each question to one of
+  two sources (FastAPI or Node.js docs) before answering -- see
+  [v2: Multi-source router agent](#v2-multi-source-router-agent-langgraph)
+  below.
+
+Built as a portfolio project. `ingest.py` works on any folder of
+markdown files -- swap in your own notes, another library's docs, or
+anything else.
 
 ## Problem statement
 
@@ -35,7 +41,7 @@ assuming it -- and includes a script (`eval/compare_baseline.py`) that
 answers the obvious follow-up question, "why not just ask ChatGPT," with a
 side-by-side comparison instead of an argument.
 
-## Architecture
+## Architecture (v1)
 
 ```
 fetch_docs.py  -->  data/docs/*.md  -->  ingest.py  -->  data/chroma_db/
@@ -48,9 +54,13 @@ fetch_docs.py  -->  data/docs/*.md  -->  ingest.py  -->  data/chroma_db/
                                     Anthropic API + Langfuse tracing
 ```
 
-- **Retrieval**: markdown files are chunked (naive fixed-size chunking,
-  see `ingest.py`) and embedded with Chroma's built-in local ONNX
-  MiniLM model -- no API key or GPU needed for embeddings.
+- **Retrieval**: markdown files are chunked with a markdown-aware
+  chunker (splits on headers and paragraphs, never mid-sentence -- see
+  "Corpus and chunking fixes" below for why) and embedded with a local
+  `sentence-transformers` MiniLM model, pulled from Hugging Face Hub.
+  (Originally used Chroma's default ONNX embedder, which downloads
+  from an S3 bucket some corporate networks block -- swapped for this
+  reason. No API key needed either way.)
 - **Generation**: Claude answers using only the retrieved chunks, and is
   instructed to cite the source file for every claim.
 - **UI**: a Streamlit chat interface (`app_streamlit.py`) and a FastAPI
@@ -73,10 +83,7 @@ fetch_docs.py  -->  data/docs/*.md  -->  ingest.py  -->  data/chroma_db/
 - **Baseline comparison**: `eval/compare_baseline.py` answers each
   question two ways -- once with no retrieval (Claude from memory,
   the "just ask ChatGPT" case) and once through the RAG pipeline --
-  and writes both side by side. Run it with `--gotcha-only` to focus
-  on the 5 questions most likely to actually diverge. This is the
-  concrete evidence for the problem statement above, not just an
-  assertion that grounding helps.
+  and writes both side by side.
 
 ## Setup
 
@@ -87,7 +94,9 @@ cp .env.example .env   # fill in ANTHROPIC_API_KEY and Langfuse keys
 ```
 
 Langfuse: sign up free at https://cloud.langfuse.com (or self-host --
-see their docs) and drop the keys into `.env`.
+see their docs) and drop the keys into `.env`. Optionally set
+`RAGAS_EVAL_MODEL` to a cheaper model (e.g. Haiku) so the eval judge
+doesn't have to be the same model that generates answers.
 
 ## Run it
 
@@ -113,10 +122,19 @@ curl -X POST localhost:8000/chat -H "Content-Type: application/json" \
 python eval/run_eval.py
 ```
 
-This prints a retrieval hit-rate plus RAGAS faithfulness and context
-precision scores, and writes per-question detail to `eval/results.json`.
-It also tries to push the mean scores to Langfuse as scores on your
-traces (best-effort -- see the comment in `run_eval.py`).
+Prints a retrieval hit-rate (with the specific questions that missed,
+and what got retrieved instead of the expected file), then RAGAS
+faithfulness and context-precision scores per question and averaged,
+and writes full detail to `eval/results.json`. Also pushes the mean
+scores to Langfuse, attached to a trace for that eval run (see "Known
+issues and fixes" for why that requires a specific setup).
+
+Real result from a full run, after all the fixes below: retrieval hit
+rate 85% (17/20 -- the 3 misses are discussed below), faithfulness
+~0.95-0.97, context precision ~0.77-0.81 (these move slightly run to
+run; the judge model isn't perfectly deterministic even at low
+temperature -- treat single-run numbers as a range, not an exact
+value).
 
 ## Run the baseline comparison
 
@@ -125,114 +143,330 @@ python eval/compare_baseline.py --gotcha-only
 ```
 
 Prints each gotcha question answered with no retrieval vs. through the
-RAG pipeline, and writes both to `eval/comparison.json`. Read through
-the pairs yourself -- the script doesn't auto-judge which answer is
-right. Look for the baseline confidently giving the older/wrong
-pattern while the RAG answer cites the current doc; that pair is your
-best evidence for the README and for the interview.
+RAG pipeline, and writes both to `eval/comparison.json`. The script
+doesn't auto-judge which answer is right -- read the pairs yourself.
+
+**Honest real result**: on an actual run, none of the 5 gotcha questions
+showed a clean "baseline wrong, RAG right" split. Claude already knew
+current FastAPI conventions on all 5 -- the corpus (a very popular,
+heavily-documented library) turned out to be too easy a target for
+this specific comparison to bite. The one genuinely interesting result
+went the *other* way: on the `lifespan`/`on_event` question, the
+baseline (no retrieval) gave a fuller, more correct answer than the
+RAG version, because retrieval was failing to find `advanced/events.md`
+at the time (see "Corpus and chunking fixes" below) and fed the model
+irrelevant chunks instead, causing it to hedge with "I don't have that
+information." That's a more useful finding than a clean win would have
+been: it shows grounding is only as good as retrieval, with a concrete,
+diagnosed example of retrieval letting a correct base model down. Worth
+re-running this script after the retrieval fixes below to see whether
+that specific pair now looks different.
 
 ## What's tested vs. what to verify yourself
 
-I built and tested this end-to-end except for two things my sandbox
+I built and tested this end-to-end except for a few things my sandbox
 couldn't reach:
-- **The embedding model download** (Chroma downloads its ONNX MiniLM
-  model from S3 on first use). Chunking, ID generation, and Chroma's
-  add/query mechanics are verified working with a stand-in embedder --
-  the real download will work fine on a normal internet connection.
+- **Embedding model downloads** (from S3 originally, then from Hugging
+  Face Hub after the corporate-network fix). Chunking, ID generation,
+  and Chroma's add/query mechanics are verified working with a
+  stand-in embedder -- the real download works fine on a normal
+  internet connection.
 - **Actual Claude/RAGAS API calls**, since that needs a real API key.
-  The eval script's exact import surface (`SingleTurnSample`,
-  `EvaluationDataset`, `llm_factory`, `Faithfulness`,
-  `LLMContextPrecisionWithoutReference`) and the Langfuse
-  `start_as_current_observation` / `.update()` / `create_score` calls
-  are all verified against the actually-installed library versions,
-  not just written from memory. `compare_baseline.py`'s data wiring
-  (arg parsing, `--gotcha-only` filtering, output JSON shape) was
-  dry-run tested with a mocked Claude client -- the actual baseline
-  vs. RAG divergence still needs a real key to see. I can't predict
-  which gotcha questions will actually diverge without running it;
-  the `gotcha_reason` field on each question is a hypothesis to test,
-  not a verified result.
-- Every `expected_source_hint` in `golden_qa.json`, including the 5
-  gotcha ones, was checked against the real fetched FastAPI docs
-  (file paths and exact wording), not guessed from memory.
+  Every library's exact import surface and call signature mentioned
+  below was checked against the actually-installed versions, not
+  written from memory, and the data-wiring in each script was dry-run
+  tested with a mocked Claude client. The actual numbers, and which
+  gotcha questions diverge, needed your real key to see.
+- Every `expected_source_hint` in `golden_qa.json` was checked against
+  the real fetched FastAPI docs (file paths and exact wording), not
+  guessed from memory.
 
-One thing worth knowing going in: **ragas 0.4.x currently has a broken
-import against the latest langchain-community** (langchain-community
-is being sunset and dropped a submodule ragas 0.4 still imports). This
-repo pins the last combo I could verify actually imports cleanly
-(`ragas==0.3.9`).
+## Known issues and fixes
 
-A second, subtler issue showed up during real testing (not caught in
-my own sandbox, since it only surfaces with a real API key): even with
-ragas importing fine, pairing `llm_factory` (the current recommended
-way to set up the judge LLM) with the classic `ragas.metrics.Faithfulness`
-+ `evaluate()` flow throws `AttributeError: 'InstructorLLM' object has
-no attribute 'agenerate_prompt'`. In ragas 0.3.9, that classic flow
-expects an older LLM interface that neither `llm_factory`'s
-`InstructorLLM` nor `LangchainLLMWrapper` implement anymore -- it's a
-genuine internal inconsistency in that ragas version, not a config
-mistake. The fix, already applied in `run_eval.py`: use
-`ragas.metrics.collections.Faithfulness` / `ContextPrecisionWithoutReference`
-instead, scored one sample at a time via `await metric.ascore(...)`,
-which is the API actually built to pair with `llm_factory`. Verified
-end-to-end with a fake LLM before wiring in the real Anthropic call --
-see the comment at the top of `run_eval.py`.
+Several real bugs surfaced only once this ran against a live API and a
+live corpus -- documenting them here since the debugging process is
+arguably the most interview-relevant part of this project.
+
+**ragas 0.4.x has a broken import** against the latest
+`langchain-community` (`langchain-community` is being sunset and
+dropped a submodule ragas 0.4 still imports). This repo pins the last
+combo verified to import cleanly: `ragas==0.3.9`.
+
+**`llm_factory` + the classic `ragas.metrics.Faithfulness` + `evaluate()`
+flow throws `AttributeError: 'InstructorLLM' object has no attribute
+'agenerate_prompt'`.** In ragas 0.3.9 that classic flow expects an
+older LLM interface neither `llm_factory`'s `InstructorLLM` nor
+`LangchainLLMWrapper` implement -- a real internal inconsistency in
+that version. Fix: `run_eval.py` uses `ragas.metrics.collections`
+(`Faithfulness`, `ContextPrecisionWithoutReference`) instead, scored
+one sample at a time via `await metric.ascore(...)`, the API actually
+built to pair with `llm_factory`.
+
+**`TypeError: Cannot use agenerate() with a synchronous client`** --
+ragas's collections metrics call the judge LLM via `await
+llm.agenerate(...)`, and ragas checks whether the client is actually
+async-capable before allowing that. Fix: build the judge with
+`AsyncAnthropic()`, not `Anthropic()`.
+
+**`400: temperature and top_p cannot both be specified for this
+model`** -- Anthropic's current model generations reject requests that
+set both sampling parameters at once, but ragas's `llm_factory`
+defaults to setting both. Fix, applied right after constructing the
+judge LLM in `run_eval.py`: drop `top_p` from `model_args` and bump
+the default `max_tokens` (1024, often too tight for structured output)
+to 4096.
+
+**Occasional judge-model scoring crashes** -- the judge model
+sometimes returns malformed structured output, and the `instructor`
+library's own retry-on-validation-error logic has a bug that can make
+every retry fail identically with an unrelated Anthropic API error
+(`tool_use ids were found without tool_result blocks`) instead of
+recovering. This is upstream flakiness, not a config problem, but it
+can crash a run partway through on question 13 as easily as question
+1. Fix: `run_eval.py` scores each question/metric pair inside its own
+try/except (`score_one()`); a failure is recorded as NaN and the run
+continues, with NaN excluded from the mean.
+
+**Langfuse "Bad request" even with valid scores** -- `create_score`
+requires exactly one of `trace_id`, `session_id`, or `dataset_run_id`;
+a "standalone" score with none of those set is rejected outright. Fix:
+`run_eval.py` wraps the whole eval run in one Langfuse span
+(`eval-run`), and every question's trace nests under it, so the
+aggregate scores attach to that trace's ID. Bonus: your dashboard now
+shows one trace per eval run with all 20 questions nested inside it,
+instead of 20 scattered top-level traces.
+
+**Corpus and chunking fixes.** Retrieval consistently missed
+`advanced/events.md` for the lifespan question across multiple runs.
+Investigating turned up two separate, real problems, found by actually
+measuring the corpus rather than guessing:
+
+- One file, `release-notes.md` (FastAPI's full changelog), was **45.7%
+  of the entire vector store** (1,062 of 2,323 chunks from a single
+  file) -- it mentions nearly every feature at least once across years
+  of "added X / fixed Y" entries, so it competed for (and often won)
+  retrieval slots purely on volume, not relevance. Fix: `ingest.py`
+  now excludes 10 non-instructional files (the changelog plus
+  contributor lists, external-link roundups, and other meta/community
+  pages) from ingestion. Corpus dropped from 2,323 chunks (one file at
+  45.7%) to 1,217 (biggest file down to 3.7%).
+- Separately, the original fixed-size chunker cut chunks at raw
+  character offsets, regularly slicing text open mid-sentence or
+  mid-word (verified on real docs -- one chunk literally started as
+  `'an" will be important...'`, sliced out of mid-sentence). Fix:
+  switched to markdown-aware chunking (splits on headers and
+  paragraphs). Verified with a TF-IDF similarity proxy (used because
+  this sandbox can't reach the real embedding model): the correct
+  chunk's score for the lifespan question rose from 0.283 to 0.345,
+  and the correct file went from missing entirely out of the top-4
+  retrieved sources to holding 3 of 4 slots.
+
+**Claude Sonnet 5 runs with adaptive thinking on by default**, which
+can break code that assumes `message.content[0].text` is always the
+answer. Confirmed directly from Anthropic's own migration docs: Sonnet
+5 decides per-request whether to reason before answering, and
+`max_tokens` is a hard ceiling on *thinking plus the answer combined*.
+This first surfaced in the v2 router (see below) with
+`AttributeError: 'ThinkingBlock' object has no attribute 'text'` --
+a request with only `max_tokens=10` apparently didn't leave enough
+room for even brief thinking plus a one-word answer, so the response
+came back as only a thinking block, no text at all. Fix, applied
+everywhere a Claude response gets read (`rag_chain.py`,
+`router_chain.py`, `eval/compare_baseline.py`): a shared
+`_extract_text()` helper that searches `message.content` for the
+actual text block instead of assuming it's first -- the exact pattern
+Anthropic's own docs recommend.
 
 If you bump the ragas version, re-run `python -c "import ragas"` and
-re-test the eval script on a couple of questions before trusting it --
-this kind of fast-moving-ecosystem breakage is exactly the sort of
-thing worth mentioning in an interview.
+re-test on a couple of questions before trusting it -- this kind of
+fast-moving-ecosystem breakage is exactly the sort of thing worth
+mentioning in an interview.
 
-Two more issues only showed up on a real run with a real key (neither
-is catchable without one):
+## v2: Multi-source router agent (LangGraph)
 
-- `TypeError: Cannot use agenerate() with a synchronous client` --
-  ragas's collections metrics call the judge LLM via `await
-  llm.agenerate(...)`, and ragas checks whether the client is actually
-  async-capable before allowing that. Fix: build the judge with
-  `AsyncAnthropic()`, not `Anthropic()`.
-- `400: temperature and top_p cannot both be specified for this model`
-  -- Anthropic's current model generations reject requests that set
-  both sampling parameters at once, but ragas's `llm_factory` defaults
-  to setting both. Fix, applied right after constructing the judge LLM
-  in `run_eval.py`: drop `top_p` from `model_args` and bump the default
-  `max_tokens` (1024, often too tight for structured output) to 4096.
-- Occasionally the judge model returns malformed structured output
-  (e.g. missing a required field), and the `instructor` library's
-  built-in retry-on-validation-error logic has its own bug that can
-  make every retry attempt fail identically with an unrelated Anthropic
-  API error (`tool_use ids were found without tool_result blocks`)
-  instead of actually recovering. This is upstream flakiness, not
-  something wrong with your setup -- but it can crash a 20-question
-  run partway through on question 13 just as easily as question 1.
-  Fix: `run_eval.py` now scores each question/metric pair inside its
-  own try/except (`score_one()`); a failure is recorded as NaN for
-  that cell and the run continues. NaN is already excluded from the
-  mean, so a few flaky cells just mean a slightly smaller effective
-  sample, not a crashed run or a corrupted average.
-- The "API errors occurred: Bad request" from Langfuse at the end of
-  the run, even with valid (non-NaN) scores: Langfuse's `create_score`
-  requires exactly one of `trace_id`, `session_id`, or `dataset_run_id`
-  -- a "standalone" score with none of those set is rejected outright.
-  The original code called `create_score(name=..., value=...)` with
-  none of them set. Fix: `run_eval.py` now wraps the whole eval run in
-  one Langfuse span (`eval-run`), and every question's individual trace
-  nests under it, so the aggregate scores get attached to that trace's
-  ID. Bonus: your Langfuse dashboard now shows one trace per eval run
-  with all 20 questions nested inside it, instead of 20 scattered
-  top-level traces.
+The pipeline above (`rag_chain.py`) is a straight line: retrieve, then
+generate. There's no decision in it, which is exactly why it didn't
+use LangGraph -- a framework for branching graphs doesn't pay for
+itself on something with no branches.
+
+`router_chain.py` adds a genuine fork: a question first goes through a
+**router** node that decides which of two documentation sources it
+belongs to (FastAPI or Node.js), then retrieval happens against the
+matching Chroma collection, then generation proceeds the same way as
+v1. This is a second, additive pipeline -- `rag_chain.py`, `api.py`,
+and `app_streamlit.py` (v1) are untouched and still work exactly as
+before.
+
+```
+question
+   |
+   v
+[route]  <- one Claude call: "fastapi" or "nodejs" (thinking explicitly
+   |         disabled -- classification needs no reasoning)
+   +-- "fastapi" --> [retrieve_fastapi] --+
+   |                                       +--> [generate] --> END
+   +-- "nodejs"  --> [retrieve_nodejs]  --+
+```
+
+### Setup
+
+```bash
+# Get the second corpus (Node.js's official API docs, ~70 files).
+# Uses a sparse/blobless git checkout so it doesn't clone the entire
+# nodejs/node source repo (which is enormous) just for the docs.
+python fetch_nodejs_docs.py
+
+# Ingest it into its own Chroma collection. Reuses the existing
+# ingest.py unchanged -- the FastAPI side reuses the "docs" collection
+# already built for v1, no need to re-ingest it.
+python ingest.py --docs_dir data/nodejs_docs --collection nodejs_docs
+```
+
+### Run it
+
+```bash
+streamlit run app_router_streamlit.py
+```
+
+Try one question clearly about each source, then try a deliberately
+vague one (see the last two entries in `eval/router_golden.json`) to
+check the router isn't just keyword-matching on the word "FastAPI" or
+"Node.js" appearing in the question.
+
+### Test router accuracy
+
+```bash
+python eval/run_router_eval.py
+```
+
+Runs `eval/router_golden.json` (16 clear-cut questions + 2 deliberately
+ambiguous ones) through just the routing step (cheap -- 1 call per
+question, no retrieval or generation) and reports accuracy plus which
+questions it got wrong.
+
+Real result: **18/18 (100%)**, including both deliberately vague
+questions ("streaming data with backpressure" correctly routed to
+Node.js, "validate incoming request data with type hints" correctly
+routed to FastAPI, neither one naming the framework). That's real
+evidence the router is reasoning about topic content, not just
+pattern-matching a literal keyword.
+
+### Test full answer quality (routing + retrieval + generation)
+
+```bash
+python eval/run_router_quality_eval.py
+```
+
+`router_golden.json` also carries a `reference_answer` for each
+question (verified against the real fetched docs, same standard as
+`golden_qa.json`'s), so this runs the *entire* pipeline and reports
+two separate things side by side: routing accuracy, and RAGAS
+faithfulness/context-precision on the actual generated answer. Kept
+separate from the cheap routing-only script on purpose: if something
+looks wrong end-to-end, this tells you whether the cause was a bad
+routing decision or a bad retrieval/generation on a correctly-routed
+question -- two different bugs with two different fixes. Same
+fault-tolerant scoring and Langfuse trace-wrapping as `run_eval.py`.
+
+### Dependency note (langgraph version pin)
+
+`requirements.txt` pins `langgraph==0.2.60`, not the current 1.x line.
+langgraph 1.x requires `langchain-core>=1.4`, which directly conflicts
+with the `langchain-core==0.3.86` the ragas eval stack needs -- both
+can't be satisfied in one environment. 0.2.60 is the newest version
+whose own requirement (`langchain-core>=0.2.43,<0.4.0`) still overlaps
+with that pin. Verified by actually installing both in the same
+environment and confirming `import ragas` and
+`from langgraph.graph import StateGraph` both succeed together.
+
+### What's tested vs. what to verify yourself
+
+Same honesty note as the rest of this project: I verified the graph's
+control flow end-to-end (routing decision -> correct branch -> correct
+Chroma collection -> generation, in the right order, exactly once each)
+using a mocked Claude client and a mocked embedding function, since my
+own sandbox can't reach either the Anthropic API or Hugging Face Hub.
+The graph wiring, the `langgraph`/`ragas` dependency compatibility, and
+the chunking quality on Node.js's docs format were all checked against
+real files and a real installed environment. Actual routing accuracy
+and retrieval quality against the real embedding model needed your key
+to confirm.
+
+### Debugging story: a header-detachment chunking bug, and an honest miss
+
+First real quality run: routing 100%, faithfulness 0.948, context
+precision **0.671** -- noticeably lower than the FastAPI-only
+pipeline's ~0.77-0.81. Three questions scored worst: crypto hashing
+(0.25), CLI argument parsing (0.33), and streaming backpressure (0.00).
+
+Investigating each one directly against the real files (not guessed)
+turned up three different causes, not one:
+
+- **A real, fixable bug**: `util.parseArgs()`'s documentation was
+  getting shredded by the chunker. The first chunk for that section had
+  the header but no real explanation (just a version-changelog block);
+  every chunk after it had the real explanation but had lost the header
+  entirely -- so a chunk explaining "the parsed command line arguments"
+  never actually contained the word `parseArgs` anywhere in its own
+  text, making it hard for retrieval to connect the two. Root cause:
+  the chunker only re-attached a section's header to the *first*
+  sub-chunk when a long section needed further splitting. Fixed in
+  `ingest.py` (this fix lives in the shared chunker, so it applies to
+  the FastAPI corpus too -- regression-checked there with no change in
+  outcome, 0.345 -> 0.344 similarity, same 3-of-4 result). Verified
+  directly against the real file that every fragment of that section
+  now contains the header text.
+- **Not a bug**: crypto hashing's low score had no findable retrieval
+  cause -- the four retrieved chunks were already correctly all about
+  the `Hash` class.
+- **Not a bug, a corpus characteristic**: backpressure is a concept
+  Node's own docs discuss inside several *other* differently-titled
+  sections, with only one file (`stream_iter.md`) having a section
+  literally titled "Backpressure". Retrieval favoring that dedicated
+  section over scattered incidental mentions elsewhere is arguably the
+  more correct behavior, not a failure.
+
+Result after the fix and a full re-run: faithfulness 0.948 -> 0.976,
+context precision 0.671 -> 0.727. Real improvement -- but an honest one,
+not the clean story predicted going in. The parseArgs question
+specifically targeted actually got *worse* (0.33 -> 0.25), most likely
+because `parseArgs` (camelCase) and "parse command line arguments"
+(plain English) don't match well under simple text-similarity methods,
+and the real embedding model may share some of that limitation. The
+actual gains showed up elsewhere -- crypto hashing jumped from 0.25 to
+1.00, almost certainly a side effect of the same header fix helping
+disambiguate `crypto.md`'s many sibling functions (`createHash`,
+`createHmac`, `createCipheriv`, etc.), not something targeted directly.
+Backpressure stayed at 0.00, exactly as expected once diagnosed as a
+corpus characteristic rather than a bug.
+
+Worth stating plainly: the fix was net-positive and the root cause was
+real and verified, but the specific prediction of *which* question
+would improve was wrong. That's a more honest -- and more interesting
+-- outcome than a story where the fix works exactly as predicted:
+measuring the aggregate mattered more here than trusting the
+hypothesis about any single question.
 
 ## Deepen this later
 
-- Swap fixed-size chunking for markdown-aware or semantic chunking,
-  compare RAGAS scores before/after
+- Look further into the crypto-module-style precision cost: dense,
+  tightly related sibling functions (many `crypto.*` methods) seem to
+  cost context precision even when the right file is retrieved --
+  worth investigating whether a reranker or per-file result diversity
+  helps
+- Try query rewriting or synonym expansion for camelCase identifiers
+  (`parseArgs` vs. "parse arguments") -- the one case in this project
+  where a real fix didn't produce the predicted improvement
 - Add a reranker (cross-encoder or hosted API) between retrieval and
   generation
-- Turn it into an agent: add tool use (web search, multi-hop retrieval)
-  via function calling or LangGraph
+- Add a third source (or a general "I don't know this topic" fallback
+  path) to the router graph, and see how routing accuracy holds up
+  with three options instead of two
 - Add a GitHub Actions workflow that runs `eval/run_eval.py` on every
   PR and fails the build if faithfulness drops below a threshold
 - Add a thumbs up/down feedback control in the Streamlit UI, and a
   script that turns thumbs-down cases into new golden eval questions
 - Deploy: FastAPI backend on Fly.io/Render, a proper frontend on
   Vercel, Langfuse dashboards for cost/latency/eval trends over time
+- Give the router a "neither" / low-confidence path instead of forcing
+  a pick between the two sources every time
