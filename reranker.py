@@ -28,11 +28,25 @@ downloading the model needs Hugging Face Hub access, which this
 sandbox's network policy blocks (the same limitation noted for the
 embedding model elsewhere in this project) -- the model download will
 work fine on a normal connection.
+
+IMPORTANT: `from sentence_transformers import CrossEncoder` is
+deliberately NOT at the top of this file. Measured directly: that one
+import alone costs ~900MB of memory (it pulls in torch), which OOM-
+killed a Render deploy even with RERANK_ENABLED=false set -- because a
+top-level import runs the moment this module is loaded (as soon as
+rag_chain.py/router_chain.py do `from reranker import rerank`),
+regardless of whether reranking is ever actually used. RERANK_ENABLED
+only gates whether a reranker gets CONSTRUCTED and CALLED, which is a
+separate, later point in the program's life than "is this module
+imported at all" -- so the flag couldn't prevent an import that had
+already happened by the time any function ran. Moving the import
+inside _get_reranker() defers it until a reranker is actually
+requested, so RERANK_ENABLED=false genuinely means "never pay this
+cost," not just "don't use the result."
 """
 import os
 
 from dotenv import load_dotenv
-from sentence_transformers import CrossEncoder
 
 # Load .env here too, defensively -- don't rely on the importing file
 # (rag_chain.py / router_chain.py) having already called load_dotenv()
@@ -51,6 +65,8 @@ _reranker = None
 def _get_reranker():
     global _reranker
     if _reranker is None:
+        from sentence_transformers import CrossEncoder  # see note at top of file: deliberately lazy
+
         _reranker = CrossEncoder(RERANK_MODEL_NAME)
     return _reranker
 
