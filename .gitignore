@@ -3,16 +3,20 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-data/chroma_db/
+# data/chroma_db/ is intentionally NOT ignored -- it's committed so Render
+# can load a pre-built vector database instead of embedding the corpus
+# live on boot, which was OOM-killing the deploy on the free tier's
+# 512MB RAM limit. Re-run ingest.py locally and re-commit this folder
+# whenever the source docs or chunking logic change.
 data/docs/
+data/nodejs_docs/
 _fastapi_repo_tmp/
+_nodejs_repo_tmp/
 eval/results.json
 eval/comparison.json
-.DS_Store
-.vscode/
-data/nodejs_docs/
-_nodejs_repo_tmp/
 eval/router_quality_results.json
 eval/feedback.jsonl
 eval/golden_qa_candidates.json
 eval/router_golden_candidates.json
+.DS_Store
+.vscode/
