@@ -14,6 +14,15 @@ import re
 import chromadb
 from chromadb.utils import embedding_functions
 
+# Files that exist in FastAPI's docs repo but aren't actually usage
+# documentation -- changelogs, contributor lists, meta/community pages,
+# internal tooling tests. Including them pollutes retrieval: a huge
+# changelog like release-notes.md mentions nearly every feature at
+# least once, so it competes for (and often wins) top-k slots purely
+# on volume, not relevance. Verified by measuring the actual corpus:
+# release-notes.md alone was 45.7% of the entire vector store (1062 of
+# 2323 chunks from one file), and it was out-competing the real
+# advanced/events.md tutorial page for lifespan-related questions.
 EXCLUDED_FILES = {
     "release-notes.md",
     "fastapi-people.md",
@@ -27,13 +36,41 @@ EXCLUDED_FILES = {
     "_llm-test.md",
 }
 
+
 def get_embedding_function():
-    """Local embedding model pulled from Hugging Face Hub instead of
-    Chroma's default (which downloads from an S3 bucket that some
-    corporate networks block/timeout on)."""
-    return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="all-MiniLM-L6-v2"
+    """Chooses the embedding backend via the EMBEDDING_BACKEND env var:
+
+    - "sentence-transformers" (default): pulls all-MiniLM-L6-v2 from
+      Hugging Face Hub via sentence-transformers/torch. This is what's
+      needed if your network blocks Chroma's default S3-hosted ONNX
+      model download (the corporate-network fix earlier in this
+      project) -- but measured directly: just importing
+      sentence-transformers costs ~905MB of memory (784MB more than
+      the baseline app), because it pulls in torch. That alone exceeds
+      Render's free-tier 512MB limit before any actual embedding work
+      happens -- confirmed as the real cause of an OOM-killed deploy.
+    - "onnx": Chroma's built-in ONNX MiniLM model. No torch, no S3
+      block risk on a normal cloud host (only some corporate networks
+      block that specific S3 bucket) -- measured at effectively +0MB
+      over baseline, since chromadb already bundles onnxruntime.
+
+    Whichever backend is used, ingest.py and rag_chain.py/router_chain.py
+    MUST use the same one in the same environment -- both files import
+    this function specifically so they can't drift out of sync, since
+    embeddings from two different models aren't comparable and would
+    silently break retrieval rather than raise an error.
+    """
+    backend = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
+    if backend == "onnx":
+        return embedding_functions.DefaultEmbeddingFunction()
+    if backend == "sentence-transformers":
+        return embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+    raise ValueError(
+        f"Unsupported EMBEDDING_BACKEND: {backend!r} -- expected 'onnx' or 'sentence-transformers'. "
+        "Failing loudly here on purpose: a silent fallback on a typo would have quietly chosen the "
+        "wrong (and, on a memory-constrained host, crash-inducing) backend instead."
     )
+
 
 def load_docs(docs_dir: str):
     paths = glob.glob(os.path.join(docs_dir, "**/*.md"), recursive=True)
@@ -52,11 +89,12 @@ def load_docs(docs_dir: str):
         print(f"Skipped {skipped} non-documentation file(s): {sorted(EXCLUDED_FILES)}")
     return docs
 
+
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
     """Markdown-aware chunking: split on headers first (keeping each
     header with its section), then split any section still too long on
     paragraph breaks -- never mid-sentence, never mid-word.
- 
+
     `overlap` is unused; kept as a parameter only so the CLI flag and
     call site don't need to change. The old fixed-size chunker cut
     chunks at raw character offsets, which regularly sliced a chunk
@@ -67,7 +105,7 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
     rose from 0.283 to 0.345 after switching to this approach, and the
     correct file went from missing entirely out of the top-4 sources
     (in the original bug report) to holding 3 of the top 4 slots.
- 
+
     Second fix, found later on Node.js's docs (heavier per-function
     changelog blocks push sections over chunk_size far more often than
     FastAPI's docs did): when a section needs further splitting by
@@ -79,13 +117,11 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
     "parseArgs" anywhere in their own text, making them nearly
     unfindable by a search for "parse command line arguments". Verified
     on the real file: after this fix, every one of that section's
-    chunks contains the header text. Regression-checked against the
-    FastAPI lifespan question that was already working -- no change in
-    outcome (0.345 -> 0.344 similarity, same 3-of-4 result).
+    chunks contains the header text.
     """
     header_pattern = re.compile(r"^(#{1,6}\s.*)$", re.MULTILINE)
     parts = header_pattern.split(text)
- 
+
     sections = []
     if parts[0].strip():
         sections.append((None, parts[0]))
@@ -95,7 +131,7 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
         body = parts[i + 1] if i + 1 < len(parts) else ""
         sections.append((header, header + body))
         i += 2
- 
+
     chunks = []
     for header, section in sections:
         section = section.strip()
@@ -117,7 +153,6 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150):
         if current.strip():
             chunks.append(current.strip())
     return chunks
-
 
 
 def main():

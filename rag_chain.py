@@ -11,6 +11,7 @@ from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 from langfuse import get_client
 from reranker import rerank
+from ingest import get_embedding_function
 
 load_dotenv()
 
@@ -25,7 +26,7 @@ you don't know instead of guessing. Cite the source file for every claim, like \
 [source: path/to/file.md]."""
 
 _chroma_client = chromadb.PersistentClient(path=DB_DIR)
-_embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+_embed_fn = get_embedding_function()
 _collection = _chroma_client.get_or_create_collection(COLLECTION, embedding_function=_embed_fn)
 _anthropic_client = anthropic.Anthropic()
 langfuse = get_client()

@@ -56,6 +56,7 @@ from dotenv import load_dotenv
 from langfuse import get_client
 from langgraph.graph import END, StateGraph
 from reranker import rerank
+from ingest import get_embedding_function
 
 load_dotenv()
 
@@ -119,7 +120,7 @@ WEB_SEARCH_TOOL = {"type": "web_search_20260318", "name": "web_search", "max_use
 # SentenceTransformerEmbeddingFunction swap made for the corporate-
 # network S3-block fix earlier in this project -- update here too if
 # you change it in ingest.py/rag_chain.py.
-_embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+_embed_fn = get_embedding_function()
 
 _chroma_client = chromadb.PersistentClient(path=DB_DIR)
 _anthropic_client = anthropic.Anthropic()
