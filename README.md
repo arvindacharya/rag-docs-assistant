@@ -5,8 +5,9 @@ answers, LLM observability (Langfuse), and an eval suite (RAGAS + custom
 checks). Ships in two versions in the same repo:
 
 - **v1**: a single-source pipeline over FastAPI's documentation.
-- **v2**: a LangGraph-based agent that routes each question to one of
-  two sources (FastAPI or Node.js docs) before answering -- see
+- **v2**: a LangGraph-based agent that routes each question one of four
+  ways -- FastAPI docs, Node.js docs, live web search for other coding
+  questions, or a hard decline for anything non-technical -- see
   [v2: Multi-source router agent](#v2-multi-source-router-agent-langgraph)
   below.
 
@@ -289,24 +290,45 @@ generate. There's no decision in it, which is exactly why it didn't
 use LangGraph -- a framework for branching graphs doesn't pay for
 itself on something with no branches.
 
-`router_chain.py` adds a genuine fork: a question first goes through a
-**router** node that decides which of two documentation sources it
-belongs to (FastAPI or Node.js), then retrieval happens against the
-matching Chroma collection, then generation proceeds the same way as
-v1. This is a second, additive pipeline -- `rag_chain.py`, `api.py`,
-and `app_streamlit.py` (v1) are untouched and still work exactly as
-before.
+`router_chain.py` adds a genuine fork -- actually two. A question
+first goes through a **router** node that decides how to handle it,
+one of four ways. This is a second, additive pipeline -- `rag_chain.py`,
+`api.py`, and `app_streamlit.py` (v1) are untouched and still work
+exactly as before.
+
+The tool is deliberately scoped, not a general-purpose assistant:
+FastAPI and Node.js questions are answered from their own docs; other
+genuine programming/technical questions (a different language,
+framework, or library) fall back to live web search; anything
+non-technical gets a fixed decline message instead of an attempt to be
+generally helpful.
 
 ```
 question
    |
    v
-[route]  <- one Claude call: "fastapi" or "nodejs" (thinking explicitly
-   |         disabled -- classification needs no reasoning)
-   +-- "fastapi" --> [retrieve_fastapi] --+
-   |                                       +--> [generate] --> END
-   +-- "nodejs"  --> [retrieve_nodejs]  --+
+[route]  <- one Claude call: "fastapi", "nodejs", "coding", or "offtopic"
+   |         (thinking explicitly disabled -- classification needs no reasoning)
+   +-- "fastapi"  --> [retrieve_fastapi] --+
+   |                                        +--> [generate] --> END
+   +-- "nodejs"   --> [retrieve_nodejs]  --+
+   |
+   +-- "coding"   --> [web_search] -----------------> END
+   |
+   +-- "offtopic" --> [decline] ---------------------> END
 ```
+
+The `coding` branch calls Claude with Anthropic's built-in `web_search`
+tool -- a server-side tool that runs the search and writes the cited
+answer in the same API call, so it skips the shared `generate` node
+entirely (there's nothing left for a separate generation step to do).
+The `offtopic` branch is even more deliberately minimal: `decline_node`
+returns a **fixed string**, making zero Claude calls at all. That's not
+a shortcut -- it's the actual design choice. A fixed message is both
+the cheapest possible outcome and the most reliable one: it can't drift
+into being generally helpful about something the tool is explicitly
+scoped not to handle, the way an LLM-generated decline message
+theoretically could.
 
 ### Setup
 
@@ -328,10 +350,28 @@ python ingest.py --docs_dir data/nodejs_docs --collection nodejs_docs
 streamlit run app_router_streamlit.py
 ```
 
-Try one question clearly about each source, then try a deliberately
-vague one (see the last two entries in `eval/router_golden.json`) to
+Try all four paths: a clear FastAPI question, a clear Node.js question,
+a coding question about something else entirely (e.g. "how does Rust's
+match statement work") to confirm it uses web search instead of
+declining, and something non-technical (e.g. "what's the weather" or
+just "hey, what's up") to confirm it declines cleanly instead of trying
+to be generally helpful. Then try a deliberately vague FastAPI/Node.js
+question (see the last two entries in `eval/router_golden.json`) to
 check the router isn't just keyword-matching on the word "FastAPI" or
 "Node.js" appearing in the question.
+
+**Real bug found this way**: the first version of this router only had
+two categories (a doc source, or "web search for literally anything
+else"). Asking it "what can you help me with" got routed to web search
+with a generic system prompt, and Claude answered by listing its own
+general capabilities -- file uploads, code execution, image generation
+-- none of which this app actually has. The fix wasn't a bigger prompt
+patch; it was a real scope narrowing: four categories instead of two,
+with "coding questions elsewhere" and "not a coding question at all"
+treated as genuinely different cases, the second one never reaching an
+LLM at all. Worth remembering as a general lesson: a fallback path
+needs to know what it's a fallback *for*, not just be told "you're a
+helpful assistant."
 
 ### Test router accuracy
 
@@ -350,6 +390,15 @@ Node.js, "validate incoming request data with type hints" correctly
 routed to FastAPI, neither one naming the framework). That's real
 evidence the router is reasoning about topic content, not just
 pattern-matching a literal keyword.
+
+**Caveat**: this result was measured before the router had `coding`
+and `offtopic` categories -- `eval/router_golden.json` currently only
+has `fastapi`/`nodejs`-labeled questions, so it doesn't test the two
+newer paths at all. Worth adding a handful of `expected_source:
+"coding"` and `"offtopic"` questions to actually measure accuracy on
+the boundary that matters most now: telling "a coding question about
+something else" apart from "not a coding question at all" (e.g. "what
+is an API" is arguably borderline and worth specifically testing).
 
 ### Test full answer quality (routing + retrieval + generation)
 
@@ -449,6 +498,10 @@ hypothesis about any single question.
 
 ## Deepen this later
 
+- Add `coding` and `offtopic` questions to `eval/router_golden.json`
+  and re-run `run_router_eval.py` -- the current 100% accuracy number
+  only covers the original two-way fastapi/nodejs split, not the
+  boundary that matters most now (coding-elsewhere vs. not-coding-at-all)
 - Look further into the crypto-module-style precision cost: dense,
   tightly related sibling functions (many `crypto.*` methods) seem to
   cost context precision even when the right file is retrieved --
@@ -459,14 +512,9 @@ hypothesis about any single question.
   where a real fix didn't produce the predicted improvement
 - Add a reranker (cross-encoder or hosted API) between retrieval and
   generation
-- Add a third source (or a general "I don't know this topic" fallback
-  path) to the router graph, and see how routing accuracy holds up
-  with three options instead of two
 - Add a GitHub Actions workflow that runs `eval/run_eval.py` on every
   PR and fails the build if faithfulness drops below a threshold
 - Add a thumbs up/down feedback control in the Streamlit UI, and a
   script that turns thumbs-down cases into new golden eval questions
 - Deploy: FastAPI backend on Fly.io/Render, a proper frontend on
   Vercel, Langfuse dashboards for cost/latency/eval trends over time
-- Give the router a "neither" / low-confidence path instead of forcing
-  a pick between the two sources every time
