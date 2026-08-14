@@ -92,6 +92,7 @@ def answer_question(question: str, k: int = TOP_K):
             "answer": answer,
             "sources": [c["source"] for c in chunks],
             "chunks": chunks,
+            "trace_id": trace.trace_id,
         }
         trace.update(output={"answer": answer, "sources": result["sources"]})
         return result

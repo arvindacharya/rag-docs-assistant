@@ -572,6 +572,44 @@ findings in one batch:
   confirmation the decline is *correct* behavior, so a future change
   can't accidentally break it.
 
+## Langfuse dashboards
+
+Beyond the per-request tracing already covered above, this project has
+a custom Langfuse dashboard ("RAG Assistant — Quality & Cost")
+tracking six widgets: faithfulness and context precision trends for
+both v1 and v2 (sourced from `eval/run_eval.py` and
+`eval/run_router_quality_eval.py` runs over time), router routing
+accuracy, and total Anthropic API cost over time -- all built from
+data this project was already generating, no new instrumentation
+needed for those six.
+
+**User feedback required real instrumentation, and surfaced two more
+real bugs**, both found immediately on real usage:
+
+- Every `st.feedback()` click in either Streamlit app now pushes a
+  score to Langfuse, not just to the local `eval/feedback.jsonl` log --
+  this needed `rag_chain.py`'s and `router_chain.py`'s `answer_question()`
+  to start returning the Langfuse `trace_id` for that specific answer,
+  threaded through Streamlit's session state so a feedback click days
+  or messages later can still attach to the right trace.
+- **First bug**: rating the same answer down, then up, then down, then
+  up left **4 separate scores** on one trace, because Langfuse's
+  default behavior is to always create a new score, never overwrite.
+  This silently corrupts an "average value" widget -- 0, 1, 0, 1
+  averages to a meaningless 0.5, hiding that the real, final opinion
+  was "up." Fixed by passing a stable `score_id`
+  (`f"{trace_id}-user-feedback"`) on every call, which is Langfuse's
+  documented mechanism for making a later score overwrite an earlier
+  one instead of stacking up.
+- **Second bug, really a design gap**: a single NUMERIC score
+  (1.0/0.0) only supports averaging, so there was no way to see actual
+  up-vote vs. down-vote *counts* -- only a blended sentiment number.
+  Fixed by pushing a second, parallel score per rating:
+  `user-feedback-category` (CATEGORICAL, values `"up"`/`"down"`),
+  which powers a count-per-category widget the numeric score alone
+  couldn't support. Both scores use the same stable-`score_id`
+  approach, so re-rating still overwrites cleanly on both.
+
 ## Deepen this later
 
 - **Add hybrid search (BM25 + embeddings)** to fix a real, well-evidenced
@@ -632,5 +670,6 @@ findings in one batch:
   the general-purpose one currently used.
 - Add a GitHub Actions workflow that runs `eval/run_eval.py` on every
   PR and fails the build if faithfulness drops below a threshold
-- Deploy: FastAPI backend on Fly.io/Render, a proper frontend on
-  Vercel, Langfuse dashboards for cost/latency/eval trends over time
+- Deploy: FastAPI backend on Fly.io/Render, and a proper frontend on
+  Vercel. 
+  

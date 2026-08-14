@@ -365,6 +365,7 @@ def answer_question(question: str):
             "answer": result["answer"],
             "sources": [c["source"] for c in result["chunks"]],
             "chunks": result["chunks"],
+            "trace_id": trace.trace_id,
         }
         trace.update(output={"source": output["source"], "answer": output["answer"], "sources": output["sources"]})
         return output

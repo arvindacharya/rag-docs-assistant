@@ -36,6 +36,7 @@ def render_message(msg, index):
                     answer=msg["content"],
                     sources=msg.get("sources", []),
                     rating="up" if feedback == 1 else "down",
+                    trace_id=msg.get("trace_id"),
                 )
                 msg["feedback_saved"] = feedback
 
@@ -62,6 +63,7 @@ if question := st.chat_input("Ask a question about the docs..."):
             "content": result["answer"],
             "sources": result["sources"],
             "question": question,  # kept so feedback can be tied back to what was asked
+            "trace_id": result.get("trace_id"),  # kept so feedback can attach a Langfuse score to this exact answer
         }
     )
     st.rerun()  # re-render through the loop above so the new message gets its feedback widget
