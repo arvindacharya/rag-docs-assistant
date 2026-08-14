@@ -10,6 +10,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 from langfuse import get_client
+from reranker import rerank
 
 load_dotenv()
 
@@ -32,13 +33,15 @@ langfuse = get_client()
 
 def retrieve(question: str, k: int = TOP_K):
     with langfuse.start_as_current_observation(as_type="span", name="retrieve") as span:
-        results = _collection.query(query_texts=[question], n_results=k)
+        candidate_k = max(k * 4, 15)  # pull more candidates than we need, then let rerank() narrow it down
+        results = _collection.query(query_texts=[question], n_results=candidate_k)
         chunks = [
             {"text": doc, "source": meta["source"], "distance": dist}
             for doc, meta, dist in zip(
                 results["documents"][0], results["metadatas"][0], results["distances"][0]
             )
         ]
+        chunks = rerank(question, chunks, top_k=k)
         span.update(
             input={"question": question, "k": k},
             output={"sources": [c["source"] for c in chunks], "distances": [c["distance"] for c in chunks]},

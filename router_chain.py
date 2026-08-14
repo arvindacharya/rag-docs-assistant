@@ -55,6 +55,7 @@ from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 from langfuse import get_client
 from langgraph.graph import END, StateGraph
+from reranker import rerank
 
 load_dotenv()
 
@@ -138,13 +139,15 @@ def _get_collection(name: str):
 
 def _retrieve(collection_name: str, question: str, k: int = TOP_K):
     collection = _get_collection(collection_name)
-    results = collection.query(query_texts=[question], n_results=k)
-    return [
+    candidate_k = max(k * 4, 15)
+    results = collection.query(query_texts=[question], n_results=candidate_k)
+    chunks = [
         {"text": doc, "source": meta["source"], "distance": dist}
         for doc, meta, dist in zip(
             results["documents"][0], results["metadatas"][0], results["distances"][0]
         )
     ]
+    return rerank(question, chunks, top_k=k)
 
 
 def _extract_text(message) -> str:

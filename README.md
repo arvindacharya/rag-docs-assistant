@@ -496,6 +496,43 @@ would improve was wrong. That's a more honest -- and more interesting
 measuring the aggregate mattered more here than trusting the
 hypothesis about any single question.
 
+### Feedback loop: thumbs up/down -> candidate golden questions
+
+Both Streamlit apps (`app_streamlit.py` and `app_router_streamlit.py`)
+show a thumbs up/down control under every answer, using Streamlit's
+built-in `st.feedback("thumbs")` widget. Every rating gets appended to
+`eval/feedback.jsonl` via the shared `feedback.py` module -- one JSON
+record per click, including which app it came from and (for the
+router) which category the question was routed to.
+
+```bash
+streamlit run app_router_streamlit.py   # or app_streamlit.py
+# ask questions, click thumbs up/down under the answers
+python eval/promote_feedback.py         # turn thumbs-down cases into review candidates
+```
+
+`promote_feedback.py` reads the log and writes draft candidates to
+`eval/golden_qa_candidates.json` (from `app_streamlit.py` feedback) or
+`eval/router_golden_candidates.json` (from `app_router_streamlit.py`
+feedback). It deliberately never writes a real `reference_answer` --
+just a `"TODO"` placeholder -- since every other golden question in
+this project was checked against the real docs by hand, and
+fabricating a "correct answer" from a bad interaction would just be a
+plausible-sounding guess. The script's job is triage: collect what
+went wrong in one place, a human checks the real docs and fills in the
+blanks, then copies verified entries into `golden_qa.json` /
+`router_golden.json` themselves. That's exactly how the two
+`"offtopic"` and `"fastapi"` questions in the current `router_golden.json`
+got there -- see the debugging story below.
+
+A person can click thumbs down, then up, then down again on the exact
+same answer -- each click is logged as a genuine, separate event (the
+raw log stays honest), but `promote_feedback.py` groups records by
+`(app, question, answer)` and only trusts the *latest* rating, so
+changing your mind doesn't create duplicate candidates or leave a
+stale negative rating flagged after you've decided the answer was
+actually fine.
+
 ### The feedback loop found a bug in itself, and two real issues in the app
 
 `promote_feedback.py`'s first version had a real bug, found immediately
@@ -537,6 +574,36 @@ findings in one batch:
 
 ## Deepen this later
 
+- **Add hybrid search (BM25 + embeddings)** to fix a real, well-evidenced
+  retrieval failure: "How do I add a path parameter with a type in
+  FastAPI?" has scored `context_precision=0.00` in *every* run of this
+  project, before and after every other fix, including reranking.
+  Measured why: 11 different files mention "path parameter" somewhere,
+  because the word "parameter" is used constantly across unrelated
+  FastAPI topics (path, query, body, response parameters all share the
+  word). A TF-IDF proxy check showed the correct file
+  (`tutorial/path-params.md`) does appear in the candidate pool, but
+  buried among chunks from `body.md`, `query-params-str-validations.md`,
+  and other files that only share generic vocabulary, not actual
+  relevance. Adding the cross-encoder reranker (see below) was expected
+  to fix exactly this kind of ambiguity -- it didn't; context precision
+  stayed at 0.00 with reranking on. Embeddings compare *meaning*, which
+  blurs together concepts that share a lot of vocabulary; BM25 (classic
+  keyword/phrase-frequency search, no neural network involved) would
+  reward an exact phrase match like "path parameter" much more heavily
+  than generic embedding similarity does. Combining both -- run Chroma's
+  embedding search and a BM25 keyword search in parallel, blend the two
+  rankings -- is the standard fix for this specific failure mode, and a
+  different kind of change from anything else fixed in this project so
+  far (all previous retrieval fixes were about corpus content or
+  chunking; this one is about the search method itself).
+- Try query rewriting for the same underlying reason: expanding "path
+  parameter" into something that disambiguates from "query parameter"/
+  "body parameter" before it ever hits retrieval, rather than fixing it
+  after the fact. Also relevant to a different, earlier finding: camelCase
+  identifiers like `parseArgs` don't match well against plain-English
+  phrasing like "parse arguments" -- the one case in this project where
+  a real, verified fix didn't produce the predicted improvement.
 - The router assumes every question belongs to exactly one category,
   but real usage surfaced a genuine case that breaks that assumption:
   a question explicitly comparing FastAPI and Node.js ("how do configs
@@ -557,17 +624,13 @@ findings in one batch:
   just the original two-way fastapi/nodejs split.
 - Look further into the crypto-module-style precision cost: dense,
   tightly related sibling functions (many `crypto.*` methods) seem to
-  cost context precision even when the right file is retrieved --
-  worth investigating whether a reranker or per-file result diversity
-  helps
-- Try query rewriting or synonym expansion for camelCase identifiers
-  (`parseArgs` vs. "parse arguments") -- the one case in this project
-  where a real fix didn't produce the predicted improvement
-- Add a reranker (cross-encoder or hosted API) between retrieval and
-  generation
+  cost context precision even when the right file is retrieved.
+  Reranking has now been tried and the result was mixed for this
+  specific question (context precision 0.83 -> 0.75, slightly worse) --
+  worth investigating per-file result diversity instead, or a
+  reranker model actually tuned for code/API documentation rather than
+  the general-purpose one currently used.
 - Add a GitHub Actions workflow that runs `eval/run_eval.py` on every
   PR and fails the build if faithfulness drops below a threshold
-- Add a thumbs up/down feedback control in the Streamlit UI, and a
-  script that turns thumbs-down cases into new golden eval questions
 - Deploy: FastAPI backend on Fly.io/Render, a proper frontend on
   Vercel, Langfuse dashboards for cost/latency/eval trends over time
