@@ -1,13 +1,14 @@
 """
-Streamlit chat UI for the v2 multi-source router agent (FastAPI + Node.js).
-This is separate from app_streamlit.py (the v1 single-source app) so v1
-stays intact and demoable on its own.
+Streamlit chat UI for the v2 multi-source router agent (FastAPI + Node.js
++ web search + decline). This is separate from app_streamlit.py (the v1
+single-source app) so v1 stays intact and demoable on its own.
 
 Run with:
     streamlit run app_router_streamlit.py
 """
 import streamlit as st
 
+from feedback import save_feedback
 from router_chain import answer_question
 
 st.set_page_config(page_title="Multi-Source Docs Agent", page_icon="🧭")
@@ -25,6 +26,9 @@ SOURCE_LABELS = {
     "offtopic": "🚫 Out of scope",
 }
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 
 def render_sources(sources):
     if not sources:
@@ -38,15 +42,32 @@ def render_sources(sources):
                 st.markdown(f"- `{s}`")  # local doc file paths
 
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for msg in st.session_state.messages:
+def render_message(msg, index):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg.get("source"):
             st.caption(f"Routed to: {SOURCE_LABELS.get(msg['source'], msg['source'])}")
-        render_sources(msg.get("sources"))
+        if msg["role"] == "assistant":
+            render_sources(msg.get("sources"))
+            feedback = st.feedback("thumbs", key=f"feedback_{index}")
+            # Only save on an actual value change -- st.feedback re-reports
+            # its current value on every rerun, not just on the click that
+            # set it, so an unguarded save would duplicate on every
+            # unrelated interaction elsewhere on the page.
+            if feedback is not None and msg.get("feedback_saved") != feedback:
+                save_feedback(
+                    app="v2",
+                    question=msg.get("question", ""),
+                    answer=msg["content"],
+                    sources=msg.get("sources", []),
+                    rating="up" if feedback == 1 else "down",
+                    source_category=msg.get("source"),
+                )
+                msg["feedback_saved"] = feedback
+
+
+for i, msg in enumerate(st.session_state.messages):
+    render_message(msg, i)
 
 if question := st.chat_input("Ask a FastAPI, Node.js, or other coding question..."):
     st.session_state.messages.append({"role": "user", "content": question})
@@ -66,5 +87,7 @@ if question := st.chat_input("Ask a FastAPI, Node.js, or other coding question..
             "content": result["answer"],
             "source": result["source"],
             "sources": result["sources"],
+            "question": question,  # kept so feedback can be tied back to what was asked
         }
     )
+    st.rerun()  # re-render through the loop above so the new message gets its feedback widget

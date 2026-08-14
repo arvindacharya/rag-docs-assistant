@@ -92,5 +92,17 @@
     "expected_source": "fastapi",
     "reference_answer": "Declare a Pydantic BaseModel with typed fields and use it as a parameter type annotation on your path operation function; FastAPI validates incoming data against those type hints automatically.",
     "note": "deliberately vague -- 'type hints' signals Python/FastAPI without saying the framework name"
+  },
+  {
+    "question": "who is the king of kabul?",
+    "expected_source": "offtopic",
+    "reference_answer": "This is not a programming/technical question, so the correct behavior is to decline and explain the tool's actual scope (FastAPI, Node.js, and other coding questions via web search) rather than attempt to answer.",
+    "note": "Added from real user feedback. The decline was actually the correct behavior here -- this is a regression test to make sure a future change doesn't accidentally make the tool try to answer a clearly off-topic question instead of declining."
+  },
+  {
+    "question": "how easy is fastapi",
+    "expected_source": "fastapi",
+    "reference_answer": "FastAPI is designed to be easy to use: it's built on standard modern Python type hints with no new syntax to learn, gives full editor autocompletion and type-checking support, and automatically generates interactive API documentation (Swagger UI and ReDoc) from your code.",
+    "note": "Added from real user feedback (thumbs down). The actual answer stitched together unrelated fragments about deployment and testing being 'easy' instead of retrieving features.md, the real dedicated overview page for FastAPI's ease-of-use claims -- a genuine, verified retrieval miss, not a router or generation bug."
   }
 ]

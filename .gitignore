@@ -7,8 +7,12 @@ data/chroma_db/
 data/docs/
 _fastapi_repo_tmp/
 eval/results.json
+eval/comparison.json
 .DS_Store
 .vscode/
 data/nodejs_docs/
 _nodejs_repo_tmp/
 eval/router_quality_results.json
+eval/feedback.jsonl
+eval/golden_qa_candidates.json
+eval/router_golden_candidates.json

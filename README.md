@@ -496,12 +496,65 @@ would improve was wrong. That's a more honest -- and more interesting
 measuring the aggregate mattered more here than trusting the
 hypothesis about any single question.
 
+### The feedback loop found a bug in itself, and two real issues in the app
+
+`promote_feedback.py`'s first version had a real bug, found immediately
+on real usage rather than caught by my own tests: a person can click
+thumbs down, then up, then down again on the exact same answer -- each
+click is logged as a separate, honest event by design -- but the
+original script treated every historical down-vote as a fresh issue.
+Rating something down twice (with an up in between) created two
+duplicate candidates for one real issue; a down followed by a final up
+(changing your mind to "actually this is fine") would still have
+wrongly flagged it as bad. Fixed by grouping records per (app,
+question, answer) and trusting only the *latest* rating -- verified
+against both the reported real sequence and the trickier down-then-up
+case before shipping the fix.
+
+Once that was fixed, real feedback surfaced two genuine, different
+findings in one batch:
+
+- **A real, verified retrieval miss**: "how easy is fastapi" got an
+  answer stitching together unrelated fragments (deployment being
+  "relatively easy," testing being "very easy") instead of retrieving
+  `features.md` -- the actual dedicated overview page that directly
+  answers this. Added as a new golden question with a reference answer
+  checked against that real file.
+- **A structural limitation, not a bug**: a question explicitly
+  comparing FastAPI and Node.js configuration can't be answered well no
+  matter how good retrieval gets, because the router can only pick one
+  collection to search. The tool correctly said "I don't know" instead
+  of guessing, but there's no way to write a correct `expected_source`
+  for a question that genuinely needs both sources -- documented as a
+  known limitation in "Deepen this later" instead of forced into the
+  eval set.
+- One thumbs-down turned out to be feedback on the tool's *scope*, not
+  a bug: "who is the king of kabul?" was correctly declined, and the
+  down-vote most likely reflected disagreement with that scope rather
+  than an actual error. Kept as a golden question anyway -- as
+  confirmation the decline is *correct* behavior, so a future change
+  can't accidentally break it.
+
 ## Deepen this later
 
-- Add `coding` and `offtopic` questions to `eval/router_golden.json`
-  and re-run `run_router_eval.py` -- the current 100% accuracy number
-  only covers the original two-way fastapi/nodejs split, not the
-  boundary that matters most now (coding-elsewhere vs. not-coding-at-all)
+- The router assumes every question belongs to exactly one category,
+  but real usage surfaced a genuine case that breaks that assumption:
+  a question explicitly comparing FastAPI and Node.js ("how do configs
+  work in Node.js and how are they different to FastAPI") can only be
+  routed to one collection, so the other source never gets searched at
+  all. The router correctly said "I don't know" rather than making
+  something up, but it's structurally unable to succeed here no matter
+  how good retrieval gets. Not added as a golden question -- there's no
+  single correct `expected_source` for it -- but worth designing for:
+  either a router category that triggers retrieval from both
+  collections for compare-style questions, or a LangGraph fan-out/
+  fan-in pattern (query both sources in parallel, merge before
+  generating).
+- `eval/router_golden.json` still has zero `"coding"`-category
+  questions, and only one `"offtopic"` one (added from real feedback,
+  see the debugging story below) -- worth adding a few more of each so
+  the 100% accuracy number actually covers all four categories, not
+  just the original two-way fastapi/nodejs split.
 - Look further into the crypto-module-style precision cost: dense,
   tightly related sibling functions (many `crypto.*` methods) seem to
   cost context precision even when the right file is retrieved --
