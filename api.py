@@ -74,6 +74,20 @@ class ChatResponse(BaseModel):
     sources: list[str]
 
 
+@app.get("/debug-embed")
+def debug_embed():
+    """TEMPORARY diagnostic endpoint -- isolates whether the embedding
+    step alone (not Chroma's query, not the Anthropic call) is what
+    crashes on a memory-constrained host. Calls rag_chain.py's
+    embedding function directly on a short test string, with nothing
+    else involved. Remove this once the real cause is confirmed --
+    it's not meant to be a permanent part of the API."""
+    from rag_chain import _embed_fn
+
+    result = _embed_fn(["test question"])
+    return {"embedding_dimensions": len(result[0])}
+
+
 class RouterChatRequest(BaseModel):
     question: str
 
