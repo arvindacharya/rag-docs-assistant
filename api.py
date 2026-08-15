@@ -8,6 +8,17 @@ Two endpoints, two separate pipelines:
                     web search for other coding questions, or a decline
                     for anything non-technical), via router_chain.py
 
+Set ENABLE_ROUTER_CHAT=false to skip importing router_chain.py (and
+therefore /router-chat) entirely -- not just its data. This is a real
+diagnostic tool, not just a feature flag: even with an empty/small
+Node.js collection, importing router_chain.py still constructs a
+second Chroma client, a second embedding function instance, and the
+whole LangGraph graph -- all real memory cost paid once at startup,
+regardless of whether /router-chat ever gets called. Disabling it
+entirely isolates whether running both pipelines in one process is
+itself the tipping point on a memory-constrained host, separate from
+anything about the embedding model or corpus size.
+
 Both cost-generating endpoints require an API key IF the API_ACCESS_KEY
 environment variable is set -- this is a real, necessary protection
 once this is deployed publicly: with no auth at all, anyone who finds
@@ -33,9 +44,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from rag_chain import answer_question
-from router_chain import answer_question as router_answer_question
 
 API_ACCESS_KEY = os.getenv("API_ACCESS_KEY")  # unset -> auth disabled (local dev default)
+ENABLE_ROUTER_CHAT = os.getenv("ENABLE_ROUTER_CHAT", "true").lower() not in ("false", "0", "no")
+
+router_answer_question = None
+if ENABLE_ROUTER_CHAT:
+    from router_chain import answer_question as router_answer_question
 
 app = FastAPI(title="Docs RAG Assistant")
 
@@ -86,14 +101,16 @@ def chat(req: ChatRequest):
     return ChatResponse(question=result["question"], answer=result["answer"], sources=result["sources"])
 
 
-@app.post("/router-chat", response_model=RouterChatResponse, dependencies=[Depends(require_api_key)])
-def router_chat(req: RouterChatRequest):
-    if not req.question.strip():
-        raise HTTPException(status_code=400, detail="question must not be empty")
-    result = router_answer_question(req.question)
-    return RouterChatResponse(
-        question=result["question"],
-        source=result["source"],
-        answer=result["answer"],
-        sources=result["sources"],
-    )
+if ENABLE_ROUTER_CHAT:
+
+    @app.post("/router-chat", response_model=RouterChatResponse, dependencies=[Depends(require_api_key)])
+    def router_chat(req: RouterChatRequest):
+        if not req.question.strip():
+            raise HTTPException(status_code=400, detail="question must not be empty")
+        result = router_answer_question(req.question)
+        return RouterChatResponse(
+            question=result["question"],
+            source=result["source"],
+            answer=result["answer"],
+            sources=result["sources"],
+        )
