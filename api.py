@@ -8,16 +8,21 @@ Two endpoints, two separate pipelines:
                     web search for other coding questions, or a decline
                     for anything non-technical), via router_chain.py
 
+KNOWN LIMITATION on Render's free tier (512MB RAM): /chat and
+/router-chat currently OOM-crash on their first real request in that
+specific environment. This was investigated thoroughly, not left
+unexamined -- see the "Deploying to Render" section in README.md for
+the full debugging story (four real, verified fixes made along the
+way, plus everything ruled out through direct testing). Locally, and
+on any host with more memory, both endpoints work correctly. /health
+always works everywhere, including on Render, since it does no
+embedding or model loading at all.
+
 Set ENABLE_ROUTER_CHAT=false to skip importing router_chain.py (and
-therefore /router-chat) entirely -- not just its data. This is a real
-diagnostic tool, not just a feature flag: even with an empty/small
-Node.js collection, importing router_chain.py still constructs a
-second Chroma client, a second embedding function instance, and the
-whole LangGraph graph -- all real memory cost paid once at startup,
-regardless of whether /router-chat ever gets called. Disabling it
-entirely isolates whether running both pipelines in one process is
-itself the tipping point on a memory-constrained host, separate from
-anything about the embedding model or corpus size.
+therefore /router-chat) entirely -- not just its data. Built as a
+diagnostic tool during the Render investigation (isolating whether
+running both pipelines in one process was the memory tipping point --
+it wasn't, but the toggle is harmless to leave in place).
 
 Both cost-generating endpoints require an API key IF the API_ACCESS_KEY
 environment variable is set -- this is a real, necessary protection
@@ -72,37 +77,6 @@ class ChatResponse(BaseModel):
     question: str
     answer: str
     sources: list[str]
-
-
-@app.get("/debug-embed")
-def debug_embed():
-    """TEMPORARY diagnostic endpoint -- isolates whether the embedding
-    step alone (not Chroma's query, not the Anthropic call) is what
-    crashes on a memory-constrained host. Calls rag_chain.py's
-    embedding function directly on a short test string, with nothing
-    else involved. Remove this once the real cause is confirmed --
-    it's not meant to be a permanent part of the API."""
-    from rag_chain import _embed_fn
-
-    result = _embed_fn(["test question"])
-    return {"embedding_dimensions": len(result[0])}
-
-
-@app.get("/debug-retrieve")
-def debug_retrieve():
-    """TEMPORARY diagnostic endpoint -- /debug-embed already confirmed
-    embedding alone works fine, so this tests the next step: embedding
-    PLUS Chroma's actual similarity search against the persisted
-    database (loading the on-disk HNSW index for the first time in
-    this process's life is a real, separate operation from just
-    embedding text). Still doesn't touch the Anthropic call at all --
-    if this crashes, the problem is Chroma's query; if this succeeds,
-    the problem must be in generate_answer() instead. Remove once the
-    real cause is confirmed."""
-    from rag_chain import retrieve
-
-    chunks = retrieve("How do I add a path parameter?")
-    return {"chunks_found": len(chunks), "sources": [c["source"] for c in chunks]}
 
 
 class RouterChatRequest(BaseModel):

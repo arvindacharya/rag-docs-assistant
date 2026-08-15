@@ -610,6 +610,116 @@ real bugs**, both found immediately on real usage:
   couldn't support. Both scores use the same stable-`score_id`
   approach, so re-rating still overwrites cleanly on both.
 
+## Deploying to Render: four real fixes, and one honest capacity limit
+
+The FastAPI backend (`api.py`) deploys to Render's free tier
+(`start.sh` handles startup). `/health` works reliably there. `/chat`
+and `/router-chat` currently do not -- they OOM-crash on their first
+real request, on that specific host's 512MB RAM limit. This section
+documents the investigation in full, because the debugging process
+found four separate, real, verified bugs along the way, and because
+an honest capacity limit is a legitimate engineering finding, not a
+loose end to hide.
+
+**Bug 1: `fetch_docs.py` cloned ~20x more than needed.** FastAPI's
+docs are translated into 20+ languages living in the same repo; a
+plain `git clone` pulled all of them (3,137 files) to get the ~155
+English files actually used. That alone was enough to OOM-kill the
+deploy before the app even started. Fixed with the same sparse-checkout
+technique already used for the (much larger) Node.js corpus: clone
+only `docs/en/docs`. Verified: 3,137 files -> 454 files, same 155
+markdown files copied out.
+
+**Bug 2: `sentence-transformers` (and the torch it pulls in) is too
+heavy for 512MB, full stop.** Measured directly: importing
+`sentence-transformers` alone costs ~905MB of memory, before any
+actual embedding work happens -- more than the entire RAM budget.
+Fixed by making the embedding backend configurable
+(`EMBEDDING_BACKEND=onnx` on Render selects Chroma's lightweight ONNX
+embedder instead, measured at effectively +0MB over baseline; local
+dev keeps using `sentence-transformers`, unaffected, since that's
+needed there for an unrelated reason -- a corporate network blocking
+the ONNX model's S3 download).
+
+**Bug 3: rebuilding the vector database live, on every boot, doesn't
+fit either.** Even with the lighter ONNX backend, embedding the whole
+corpus fresh on every restart (needed since Render's free tier has no
+persistent disk) still exceeded 512MB. Fixed architecturally: the
+vector database is now built once, locally, and committed directly to
+the repo (`data/chroma_db/`, ~11MB for the FastAPI-only corpus --
+Node.js's ~9,060 chunks were deliberately left out specifically to
+keep this small while isolating the memory problem). `start.sh` now
+prefers this pre-built database over rebuilding, with a fallback to
+the old rebuild-from-scratch behavior if it's ever missing.
+
+**Bug 4: the reranker's "disable" flag didn't prevent the expensive
+import, only its usage.** `reranker.py` unconditionally imported
+`sentence_transformers.CrossEncoder` at the top of the file --
+meaning the same ~900MB cost from Bug 2 got paid again, every time
+`rag_chain.py`/`router_chain.py` got imported, regardless of
+`RERANK_ENABLED`. `RERANK_ENABLED=false` only gated whether a reranker
+got *constructed and called*, a separate, later point in the
+program's life than "is this module imported at all" -- so the flag
+couldn't stop an import that had already happened by the time any
+function ran. Fixed by moving the import inside the function that
+actually needs it (a lazy import), confirmed directly: importing
+`reranker.py` with `RERANK_ENABLED=false` now costs ~5MB, not ~900MB.
+
+**After all four fixes, `/chat` still crashed on its first real
+request.** Investigated further with two temporary diagnostic
+endpoints (since removed) that isolated the request into its
+component steps:
+- `/debug-embed` -- embedding a test string alone. **Succeeded.**
+- `/debug-retrieve` -- embedding plus Chroma's actual similarity
+  search against the committed database. **Crashed**, consistently,
+  with the same fast/empty 502 signature as every crash before it.
+
+That result ruled out embedding computation as the cause and narrowed
+it specifically to Chroma's query step. Further hypotheses were
+tested and ruled out directly, not assumed:
+- **Repeated model loading**: read Chroma's own source --
+  `model` is a `@cached_property`, loaded once and reused, not
+  reconstructed per call.
+- **Chroma's query mechanism being inherently expensive at this
+  scale**: reproduced locally with a real 1,550-chunk collection and
+  genuinely diverse random vectors (not a lazy identical-vector
+  shortcut) -- cost about 11MB, nowhere near enough to explain the
+  crash.
+- **`embed_query()` doing extra work `/debug-embed`'s direct call
+  didn't exercise**: read the source -- it's identical to `__call__`
+  when not overridden, which this embedding function doesn't do.
+- **Two full pipelines (`rag_chain.py` + `router_chain.py`) in one
+  process being the tipping point**: tested directly with
+  `ENABLE_ROUTER_CHAT=false`, isolating `router_chain.py` out of the
+  process entirely. Still crashed.
+- **Cumulative memory drift across a long-running process** (a real,
+  known Python/native-library phenomenon, distinct from any single
+  operation being expensive): tested by forcing a fresh restart and
+  hitting `/debug-retrieve` as the very first request, before any
+  other activity could accumulate. Still crashed, immediately.
+
+**Every specific, testable hypothesis came back clean.** At that
+point, continuing to add diagnostic layers had genuinely diminishing
+returns without access to Render's own memory profiling tools. The
+honest conclusion: this looks like a real capacity mismatch between
+this specific library stack (Chroma's actual similarity-search
+mechanics, whatever they're doing under the hood on the real committed
+database) and a 512MB ceiling, for reasons that would need lower-level
+tooling than was available to fully pin down.
+
+**The real options from here, not further speculation:**
+1. Pay for more RAM (Render's Standard tier, $25/month, 2GB) -- would
+   very likely just work, at the cost of the "keep this free" goal.
+2. Stop embedding locally at all -- use a hosted embedding API (e.g.
+   OpenAI's or Cohere's) instead of Chroma's local ONNX model, turning
+   embedding into a small network call with no local memory footprint,
+   regardless of whatever Chroma's own mechanics were doing.
+3. Accept this as a documented limitation (the choice made here) --
+   the deployed instance demonstrates real architecture, a real
+   `/health` check, and a real, systematically-investigated capacity
+   finding; full `/chat` functionality is verified working locally and
+   in this writeup, not on this specific free-tier host.
+
 ## Deepen this later
 
 - **Add hybrid search (BM25 + embeddings)** to fix a real, well-evidenced
@@ -670,6 +780,12 @@ real bugs**, both found immediately on real usage:
   the general-purpose one currently used.
 - Add a GitHub Actions workflow that runs `eval/run_eval.py` on every
   PR and fails the build if faithfulness drops below a threshold
-- Deploy: FastAPI backend on Fly.io/Render, and a proper frontend on
-  Vercel. 
-  
+- Deploy a frontend on Vercel. (FastAPI backend is deployed on Render
+  -- `/health` works reliably there; `/chat`/`/router-chat` hit a real,
+  fully investigated memory capacity limit on the free tier, documented
+  above rather than left unexplained. Langfuse dashboards are done --
+  see above.)
+- Try the hosted-embedding-API approach mentioned in the Render
+  section above, as a real fix for the memory limit rather than just
+  a documented tradeoff -- would need an OpenAI or Cohere API key
+  instead of Chroma's local ONNX model.
