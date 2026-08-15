@@ -88,6 +88,23 @@ def debug_embed():
     return {"embedding_dimensions": len(result[0])}
 
 
+@app.get("/debug-retrieve")
+def debug_retrieve():
+    """TEMPORARY diagnostic endpoint -- /debug-embed already confirmed
+    embedding alone works fine, so this tests the next step: embedding
+    PLUS Chroma's actual similarity search against the persisted
+    database (loading the on-disk HNSW index for the first time in
+    this process's life is a real, separate operation from just
+    embedding text). Still doesn't touch the Anthropic call at all --
+    if this crashes, the problem is Chroma's query; if this succeeds,
+    the problem must be in generate_answer() instead. Remove once the
+    real cause is confirmed."""
+    from rag_chain import retrieve
+
+    chunks = retrieve("How do I add a path parameter?")
+    return {"chunks_found": len(chunks), "sources": [c["source"] for c in chunks]}
+
+
 class RouterChatRequest(BaseModel):
     question: str
 
